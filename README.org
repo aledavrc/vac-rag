@@ -1,0 +1,262 @@
+#+title: VacuInfo
+#+subtitle: Consulta de la normativa de vacunación del Perú con RAG
+#+options: toc:nil
+
+* Qué es
+
+VacuInfo es un sistema de *RAG (Retrieval-Augmented Generation)* para consultar en lenguaje natural
+la *NTS N° 246-MINSA/DGIESP-2026*, "Norma Técnica de Salud que establece el Esquema Nacional de
+Inmunizaciones".
+
+Responde únicamente con base en los PDF oficiales de =pdf/= y devuelve la *página y sección* que
+sustentan la respuesta. No es un asistente médico ni reemplaza la lectura de la norma: es una
+herramienta de consulta rápida y trazable.
+
+* El problema
+
+La norma tiene 140 páginas escaneadas, organizadas en secciones, fichas técnicas de vacunas y
+tablas. Buscar una edad, una dosis, un intervalo, una temperatura de conservación o una
+contraindición implica revisar muchas páginas. Además, los PDF *no tienen capa de texto*.
+
+VacuInfo hace una ingesta local —OCR, extracción de tablas, limpieza y fragmentación— y produce una
+base vectorial que puede servirse en local o en un contenedor ligero.
+
+* Cómo funciona
+
+#+begin_example
+INGESTA (local, una vez)
+
+  PDF escaneados
+      → OCRmyPDF + Tesseract español
+      → Docling: texto, secciones y tablas
+      → limpieza y chunks con metadatos
+      → embeddings + ChromaDB
+      → data/index/chroma/
+
+
+CONSULTA (local o Docker)
+
+  pregunta
+      → embedding de la pregunta
+      → búsqueda vectorial + BM25
+      → fusión RRF
+      → LLM con contexto citado, o modo extractivo
+      → respuesta + fuentes
+#+end_example
+
+La prioridad es la *calidad de la ingesta*. Si el OCR o las tablas están mal extraídos, el mejor
+modelo de lenguaje responderá mal.
+
+* Corpus y alcance
+
+- *Documento:* NTS N° 246-MINSA/DGIESP-2026.
+- *Archivos:* dos PDF en =pdf/=, partes 1 y 2 de un mismo documento.
+- *Extensión:* 140 páginas (97 + 43), con numeración impresa continua.
+- *Formato:* escaneos de ~150 ppp, sin capa de texto, con tablas, fichas, sellos y encabezados
+  repetidos.
+- *Consultas:* solo sobre esta norma.
+- *Fuera de alcance:* diagnóstico, recomendaciones clínicas, otras normas, datos de pacientes,
+  interfaz web y fine-tuning.
+
+* Stack
+
+- Python 3.12 y =uv=.
+- FastAPI + Uvicorn.
+- ChromaDB 1.5 como base vectorial.
+- FastEmbed + ONNX Runtime con =paraphrase-multilingual-MiniLM-L12-v2= (384 dimensiones).
+  No requiere PyTorch en la imagen de consulta.
+- BM25 en memoria para búsqueda léxica.
+- OCRmyPDF + Tesseract (español) para la ingesta local.
+  Usa =tessdata_best=, renderizado a 300 ppp, motor LSTM, vocabulario del dominio y patrones
+  numéricos.
+- Docling para extracción de layout y tablas.
+- Normalización contextual de unidades (=ml=, =mcg=, =°C=) y banderas de revisión para valores
+  dudosos.
+- LLM opcional con interfaz compatible con OpenAI (Ollama, OpenAI, etc.).
+  Si no se configura, la API responde en *modo extractivo* con citas.
+
+* Instalación local
+
+#+begin_src bash
+# 1. Dependencias de Python
+uv venv --python 3.12 .venv
+uv pip install -e ".[ingest,dev]"
+
+# 2. Modelo de OCR en español (no requiere sudo)
+make setup-ocr
+
+# 3. Ingesta completa: OCR, Docling, chunks e índice
+make ingest
+
+# 4. API
+make serve
+#+end_src
+
+=make setup-ocr= descarga =spa.traineddata= y copia los archivos de configuración de Tesseract a
+=models/tessdata= para que OCRmyPDF los use sin tocar el sistema.
+
+El modelo de embeddings se descarga la primera vez que se ejecuta la ingesta.
+
+* Docker ligero
+
+La imagen de consulta *no incluye OCR ni Docling*. Solo incluye FastAPI, ChromaDB, FastEmbed y el
+modelo de embeddings (unos 850 MB). La base ya construida se monta como volumen:
+
+#+begin_src bash
+# En la máquina local, después de `make ingest`:
+docker compose up --build -d
+#+end_src
+
+=docker-compose.yml= monta =./data/index= en =/app/data/index=. El contenedor no necesita los PDF,
+ni =chunks.jsonl=, ni los modelos de OCR: reconstruye el índice léxico desde ChromaDB.
+El build descarga el modelo de embeddings (~220 MB) y lo deja dentro de la imagen.
+
+Para usar un LLM local en el host (Ollama):
+
+#+begin_src bash
+VACUINFO_LLM_BASE_URL=http://host.docker.internal:11434/v1 \
+VACUINFO_LLM_MODEL=qwen2.5:7b \
+docker compose up -d
+#+end_src
+
+Si no se define =VACUINFO_LLM_BASE_URL=, el contenedor funciona en modo extractivo.
+
+* API
+
+| Método | Ruta        | Función                                      |
+|--------+-------------+----------------------------------------------|
+| GET    | =/salud=    | Estado, chunks y pendientes de revisión       |
+| POST   | =/consulta= | Pregunta → respuesta + fuentes                |
+| POST   | =/buscar=   | Solo recuperación, sin LLM (depuración)       |
+
+#+begin_src bash
+curl -X POST http://localhost:8000/consulta \
+  -H "Content-Type: application/json" \
+  -d '{"pregunta": "¿Cuál es la finalidad de la norma?"}'
+#+end_src
+
+Ejemplo de respuesta. =respuesta= y =fragmento= son Markdown: pueden contener listas, tablas,
+negritas y saltos de línea; el cliente debe renderizarlos.
+
+#+begin_src json
+{
+  "respuesta": "**Según la normativa cargada:**\n\nFINALIDAD\n\nContribuir a disminuir la morbimortalidad...\n\n*Fuente: [NTS N° 246-MINSA/DGIESP-2026, p. 1, sección FINALIDAD]*",
+  "fuentes": [
+    {
+      "chunk_id": "nts-246-2026-p1-texto-...",
+      "documento": "NTS N° 246-MINSA/DGIESP-2026",
+      "pagina": 1,
+      "pagina_pdf": 1,
+      "seccion": "FINALIDAD",
+      "vacuna": null,
+      "tipo": "texto",
+      "fragmento": "FINALIDAD\n\nContribuir...",
+      "score": 1.0,
+      "revisar": false,
+      "notas": null
+    }
+  ],
+  "modo": "extractivo",
+  "formato": "markdown",
+  "tiempo_ms": 42
+}
+#+end_src
+
+* Estructura
+
+#+begin_example
+vacuinfo/
+├── pdf/                  # PDF originales
+├── data/                 # OCR, texto limpio, chunks e índice (generado)
+│   ├── processed/        # texto y reportes de revisión
+│   ├── overrides/        # correcciones de página completa
+│   └── index/            # ChromaDB
+├── models/               # tessdata y modelo FastEmbed (generado)
+├── src/vacuinfo/
+│   ├── data/             # vocabulario y patrones de Tesseract
+│   ├── ingest/           # OCR, Docling, limpieza, chunks, índice
+│   ├── rag/              # embeddings, recuperación, generación
+│   ├── api.py            # FastAPI
+│   └── cli.py            # comandos
+├── eval/                 # preguntas de evaluación
+├── tests/
+├── Dockerfile
+├── docker-compose.yml
+├── Makefile
+├── pyproject.toml
+├── PLAN.org
+└── README.org
+#+end_example
+
+* Comandos útiles
+
+#+begin_src bash
+make ingest        # pipeline completa
+make serve         # API con recarga
+make test          # pruebas
+make lint          # ruff
+make docker-build
+make docker-up
+#+end_src
+
+Comandos equivalentes sin =make=:
+
+#+begin_src bash
+.venv/bin/python -m vacuinfo.cli ingestar
+.venv/bin/python -m vacuinfo.cli consultar "¿Qué vacunas se aplican a gestantes?"
+.venv/bin/python -m vacuinfo.cli consultar --render "¿Qué consecuencias tiene una inyección no estéril?"
+.venv/bin/python -m vacuinfo.cli buscar "cadena de frío"
+.venv/bin/python -m vacuinfo.cli servir --reload
+#+end_src
+
+* Estado
+
+- Pipeline de ingesta ejecutada sobre las 140 páginas.
+- 790 chunks indexados en ChromaDB; 17 marcados para revisión.
+- 11/11 preguntas de evaluación recuperan la fuente esperada en el top 5.
+- API probada en local y en Docker, con la base montada como único volumen.
+- Modo extractivo y abstención para preguntas fuera de alcance.
+- Respuestas y fragmentos en Markdown, con tablas, listas y viñetas.
+- LLM opcional; no se incluye un modelo generativo en la imagen.
+
+* Calidad del OCR
+
+- Se usa =tessdata_best=, 300 ppp, LSTM y PSM 3.
+- Un vocabulario del dominio sesga el reconocimiento hacia =ml=, =mcg=, =mg=, =°C= y nombres de
+  vacunas.
+- Los patrones numéricos favorecen la presencia del punto o la coma decimal.
+- Después del OCR se normalizan unidades en contexto: =0.5 mi= → =0.5 ml=, =9,5 mí= → =9,5 ml=,
+  =+2'Ca+8%C= → =+2 °C a+8 °C=.
+- Los valores ambiguos no se corrigen a ciegas: se marcan con =revisar=true= y una nota. Por
+  ejemplo, =05 ml= se marca como “posible decimal perdido”.
+- =GET /salud= informa =chunks_revisar=; cada fuente de una consulta incluye =revisar= y =notas=.
+- Los valores marcados se listan en =data/processed/revision.md= para revisión manual.
+
+* Correcciones específicas del corpus
+
+- Las páginas 101-103 y 121-130 están escaneadas giradas 90°; el OCR las endereza antes de
+  procesarlas.
+- Las páginas de formularios en blanco (101-103, 121-139) se omiten del índice para evitar ruido.
+- Si una tabla crítica queda mal reconstruida, se puede escribir un Markdown corregido en
+  =data/overrides/nts-246-parte-1-p23.md= (o con el nombre completo del PDF) y volver a ejecutar
+  =make ingest=. Se aceptan ambos nombres: =nts-246-parte-N-pPAGINA.md= y
+  =<nombre-completo-del-pdf>-pPAGINA.md=.
+
+* Limitaciones conocidas
+
+- El OCR puede confundir números, unidades o nombres de vacunas. En esta ejecución quedaron
+  valores dudosos en la ficha de Tdap (p. 34), en algunas filas del Anexo 8 (p. 98) y en
+  duplicaciones del Anexo 9 (p. 100). Esas páginas deben revisarse antes de usar el sistema como
+  fuente de un dato crítico.
+- Las tablas escaneadas y partidas entre páginas requieren revisión; las tablas críticas se validan
+  manualmente.
+- Una respuesta bien formada no garantiza que el dato clínico sea correcto: hay que contrastar la
+  cita con el PDF original.
+- El sistema solo conoce la norma cargada.
+- El modo extractivo no redacta una respuesta sintetizada; devuelve los fragmentos más relevantes
+  con su cita. Para respuestas redactadas hay que configurar un LLM.
+
+* Documentación
+
+Las decisiones técnicas, la pipeline de ingesta, la evaluación y el roadmap están en
+[[file:PLAN.org][PLAN.org]].

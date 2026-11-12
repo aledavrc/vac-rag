@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.env
+
+# Datos generados
+data/ocr/
+data/processed/
+data/index/
+data/*.json
+data/*.jsonl
+data/incidencias.md
+
+# Modelos descargados
+models/tessdata/
+models/fastembed/
+
+# Empaquetado
+dist/
+build/
+*.egg-info/

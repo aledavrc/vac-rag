@@ -1,0 +1,18 @@
+services:
+  vacuinfo:
+    build: .
+    image: vacuinfo:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      # Solo se monta la base ya construida en local.
+      - ./data/index:/app/data/index
+    environment:
+      VACUINFO_CHROMA_COLLECTION: normativa_vacunacion
+      VACUINFO_LLM_BASE_URL: ${VACUINFO_LLM_BASE_URL:-}
+      VACUINFO_LLM_MODEL: ${VACUINFO_LLM_MODEL:-qwen2.5:7b}
+      VACUINFO_LLM_API_KEY: ${VACUINFO_LLM_API_KEY:-ollama}
+      VACUINFO_LLM_TIMEOUT: ${VACUINFO_LLM_TIMEOUT:-60}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

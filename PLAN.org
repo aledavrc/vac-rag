@@ -1,0 +1,869 @@
+#+title: VacuInfo — RAG para la normativa de vacunación del Perú
+#+subtitle: Plan técnico y de producto
+#+options: toc:2
+
+* Resumen ejecutivo
+
+VacuInfo será un sistema de consulta en lenguaje natural sobre la *NTS N° 246-MINSA/DGIESP-2026*,
+"Norma Técnica de Salud que establece el Esquema Nacional de Inmunizaciones". El sistema
+responderá únicamente con base en los PDF oficiales incluidos en =pdf/= y devolverá la respuesta
+junto con la página y la sección exactas que la sustentan.
+
+La decisión más importante del proyecto es reconocer que el corpus *no es texto digital, sino un
+escaneo*. Por eso el esfuerzo principal no está en el chatbot ni en la base vectorial, sino en una
+buena pipeline de OCR, reconstrucción de tablas, limpieza y fragmentación con estructura. Sin esa
+etapa, el RAG recuperará texto incompleto o tablas desordenadas y responderá mal aunque use un buen
+modelo.
+
+El alcance se mantiene deliberadamente pequeño: una norma, dos PDF y unas 140 páginas de texto y
+tablas, una API FastAPI, una base ChromaDB y un único proceso de ingesta reproducible. No se usarán
+LangChain, LlamaIndex, microservicios, frontend ni fine-tuning en la primera versión.
+
+* Estado de implementación
+
+La versión inicial ya está implementada y ejecutada sobre el corpus:
+
+- OCR de las 140 páginas con Tesseract español (`tessdata_best`, 300 ppp).
+- Extracción con Docling y corrección de orientación de las páginas giradas.
+- Normalización contextual de unidades y banderas de valores dudosos.
+- 790 chunks indexados; 17 marcados para revisión.
+- Respuestas y fragmentos en Markdown, con listas y tablas.
+- Búsqueda híbrida con refuerzo léxico y de vacuna.
+- API FastAPI con modo extractivo, citas y abstención.
+- Imagen Docker de consulta que monta solo =data/index=.
+- Evaluación inicial: 11/11 preguntas recuperan la fuente esperada en el top 5.
+
+Los detalles de uso están en =README.org=.
+
+* 1. Problema y alcance
+
+** 1.1 Objetivo
+
+Facilitar la consulta de la normativa oficial de vacunación del Perú, permitiendo preguntar en
+lenguaje natural por edades, dosis, intervalos, vías de administración, conservación,
+contraindicaciones, efectos adversos y casos especiales, y obteniendo una respuesta breve con
+citas verificables.
+
+** 1.2 Preguntas que debe responder
+
+- ¿A qué edad se administra la vacuna SPR?
+- ¿Cuál es el esquema de vacunación de la vacuna contra el rotavirus?
+- ¿Qué vacunas se pueden aplicar simultáneamente?
+- ¿Cuál es la cadena de frío de la vacuna contra la hepatitis B?
+- ¿Qué efectos adversos se asocian a la vacuna DPT?
+- ¿Qué hacer si un niño regurgita la vacuna antipoliomielítica oral?
+- ¿Qué dice la norma sobre la vacunación de gestantes?
+- ¿Qué eventos adversos figuran en el Anexo 8?
+
+** 1.3 Dentro del alcance
+
+- Una sola norma: NTS N° 246-MINSA/DGIESP-2026.
+- Los dos archivos PDF de =pdf/=, que son partes de un mismo documento.
+- Consulta informativa y trazable, con cita de página y sección.
+- API local y ejecución en una sola máquina.
+
+** 1.4 Fuera del alcance (v1)
+
+- Recomendaciones clínicas distintas de lo que dice la norma.
+- Otras normas, resoluciones, stocks, precios o datos operativos.
+- Historia clínica, datos de pacientes o autenticación de usuarios.
+- Interfaz web, aplicación móvil, chat con memoria y carga de documentos por el usuario.
+- Fine-tuning de modelos.
+- Asesoría médica o legal. El sistema solo facilita la consulta del texto oficial.
+
+* 2. Corpus: hallazgos verificados
+
+| Archivo                                          | Páginas | Capa de texto | Observación                          |
+|--------------------------------------------------+---------+---------------+--------------------------------------|
+| =8265031-...-parte-1.pdf=                        | 97      | No            | Escaneo a ~150 ppp, con tablas       |
+| =8265031-...-parte-2.pdf=                        | 43      | No            | Escaneo; inicia en la página impresa 98 |
+| *Total*                                          | *140*   | *No*          | Un solo documento dividido en dos    |
+
+Hallazgos que condicionan el diseño:
+
+1. *No existe capa de texto.* =pdftotext= devuelve vacío. Camelot, Tabula y pdfplumber no pueden
+   extraer tablas directamente sin un OCR previo.
+2. *Los PDF están rotados a nivel de página* (=/Rotate 270=), aunque la renderización visual es
+   vertical. Hay que verificar la orientación antes de aplicar rotaciones automáticas.
+3. *El documento está dividido en dos archivos*, pero la numeración impresa es continua: la
+   parte 2 comienza en la página 98. Para las citas se debe usar la *página impresa*, no el índice
+   interno del PDF.
+4. *Hay tablas con bordes y fichas de vacuna en formato clave-valor.* Ejemplos: ficha de la vacuna
+   antipoliomielítica oral en la p. 22, ficha de DPT/Hepatitis A en la p. 34, Anexo 8 en la p. 98.
+5. *Hay tablas que continúan en la página siguiente*, filas partidas y encabezados repetidos.
+6. *Hay ruido visual*: sellos laterales, encabezados y pies repetidos, números de página y marcas
+   de digitalización.
+7. *El OCR en español es viable.* Una prueba preliminar con Tesseract en español recupera texto
+   legible, pero pierde la estructura de las tablas. Por eso el OCR solo no alcanza.
+
+* 3. Cambios clave respecto al plan original
+
+| Plan original                                   | Plan propuesto                                                        |
+|-------------------------------------------------+-----------------------------------------------------------------------|
+| Pasar los PDF directamente a ChromaDB           | OCR → extracción estructurada → limpieza → chunks → índice            |
+| Usar solo búsqueda vectorial                    | Búsqueda vectorial + léxica (BM25) combinadas con RRF                |
+| Responder con el fragmento recuperado            | Generar una respuesta fundamentada, con citas y abstención            |
+| No definir calidad de extracción                | Verificación manual de tablas críticas y muestra de páginas           |
+| No evaluar el sistema                           | Conjunto de 20–30 preguntas y métricas de recuperación y citas        |
+| Alcance abierto                                 | Una norma, dos PDF y una API; todo lo demás fuera de v1               |
+
+* 4. Principios de diseño
+
+1. *Precisión antes que cobertura.* Es preferible responder "no se encontró en la normativa" que
+   inventar una edad, una dosis o una contraindicación.
+2. *La etapa de datos es determinista.* El OCR, la extracción y la limpieza no usan un LLM. Se
+   pueden inspeccionar, repetir y corregir.
+3. *Trazabilidad.* Cada fragmento conserva documento, página impresa, sección y, cuando
+   corresponde, vacuna y tabla de origen.
+4. *Una única fuente de verdad.* =data/chunks.jsonl= se genera una vez y permite reconstruir el
+   índice sin volver a hacer OCR.
+5. *Minimalismo.* Un proceso, una base local, un modelo de embeddings y un proveedor de LLM
+   configurable. Sin frameworks de orquestación innecesarios.
+6. *Validación humana en lo crítico.* Las tablas de esquema, dosis e intervalos se revisan a mano
+   una vez; el resto se valida por muestreo.
+7. *El texto original manda.* El sistema no corrige ni completa información clínica por su cuenta.
+
+* 5. Arquitectura
+
+#+begin_example
+                    ETAPA OFFLINE (se ejecuta una vez)
+
+  pdf/*.pdf
+      │
+      ▼
+  [1] OCR (OCRmyPDF + Tesseract español)
+      │  PDF con capa de texto, enderezado y limpio
+      ▼
+  [2] Extracción de estructura (Docling)
+      │  Markdown + JSON con páginas, secciones y tablas
+      ▼
+  [3] Limpieza y normalización
+      │  sin encabezados, sellos ni guiones de corte
+      ▼
+  [4] Chunking por sección, ficha y tabla
+      │  data/chunks.jsonl  ← fuente de verdad
+      ▼
+  [5] Embeddings + ChromaDB
+         data/index/chroma/
+
+
+                    ETAPA ONLINE (por consulta)
+
+  POST /consulta
+      │
+      ▼
+  [Embedding de la pregunta]
+      │
+      ├──► búsqueda vectorial (ChromaDB, top 10)
+      └──► búsqueda léxica BM25 (top 10)
+      │
+      ▼
+  Fusión RRF y deduplicación (top 6–8)
+      │
+      ▼
+  Prompt con contexto citado + LLM
+      │
+      ▼
+  Respuesta + fuentes (documento, página, sección)
+#+end_example
+
+Componentes:
+
+- *Ingesta*: scripts de Python ejecutados por CLI.
+- *Almacenamiento*: =chunks.jsonl= para inspección y ChromaDB para búsqueda vectorial.
+- *Recuperación*: vectorial + BM25 en memoria; el corpus es pequeño y no requiere Elasticsearch.
+- *Generación*: cliente compatible con OpenAI (Ollama local o API externa).
+- *API*: FastAPI con tres endpoints.
+- *Evaluación*: conjunto fijo de preguntas y un script de medición.
+
+* 6. Ingesta y limpieza (núcleo del proyecto)
+
+** 6.1 Comparativa de opciones
+
+| Opción                          | ¿Sirve? | Motivo                                                               |
+|---------------------------------+---------+----------------------------------------------------------------------|
+| =pdftotext=                     | No      | Los PDF no tienen capa de texto                                      |
+| Tesseract directo               | Parcial | Buen texto corrido, pero destruye filas y columnas                   |
+| Camelot / Tabula / pdfplumber   | No      | Dependen de texto digital o de una capa OCR alineada                  |
+| *OCRmyPDF + Docling*            | *Sí*    | OCR robusto + análisis de layout + reconstrucción de tablas           |
+| Marker / MinerU                 | Alternativa | Buena calidad, pero más pesados y con modelos grandes               |
+| Transcripción manual            | Solo control | No escala, pero es útil para validar tablas críticas               |
+
+*Recomendación:* usar *OCRmyPDF* para producir un PDF buscable y *Docling* para extraer texto,
+layout y tablas a Markdown/JSON. Es la combinación con mejor relación calidad/complejidad para 140
+páginas escaneadas. Marker o MinerU quedan como respaldo si la calidad de Docling no alcanza en las
+tablas.
+
+** 6.2 Pipeline recomendado, paso a paso**
+
+*** Paso 0 — Inventario y manifiesto
+
+- Calcular SHA-256 de cada PDF.
+- Registrar nombre, páginas, tamaño y parte del documento.
+- Guardar =data/manifest.json= con la versión de la pipeline y los parámetros usados.
+- No modificar nunca los PDF originales de =pdf/=.
+
+*** Paso 1 — OCR con OCRmyPDF
+
+Objetivo: obtener un PDF con texto invisible, enderezado y sin ruido de fondo, conservando la
+imagen original para la reconstrucción de tablas.
+
+Comando previsto:
+
+#+begin_src bash
+ocrmypdf \
+  --language spa \
+  --oversample 300 \
+  --tesseract-oem 1 \
+  --tesseract-pagesegmode 3 \
+  --tesseract-config data/ocr/vacuinfo.tessconfig \
+  --deskew \
+  --clean \
+  --output-type pdf \
+  --jobs 4 \
+  pdf/8265031-nts-n-246-minsa-digiesp-2026-parte-1.pdf \
+  data/ocr/nts-246-parte-1.pdf
+#+end_src
+
+Notas:
+
+- Se usa =tessdata_best= (13 MB) en lugar de =tessdata_fast= (2,2 MB).
+- =--oversample 300= mejora la segmentación de caracteres pequeños; el escaneo original es de
+  ~150 ppp.
+- El archivo =vacuinfo.tessconfig= agrega =user_words_file=, =user_patterns_file= y
+  =preserve_interword_spaces=.
+- El vocabulario incluye =ml=, =mcg=, =mg=, =°C= y nombres de vacunas. Los patrones favorecen los
+  números con separador decimal.
+- *No activar =--rotate-pages= a ciegas.* Los PDF ya traen una rotación declarada y la
+  renderización es correcta.
+- =--clean= ayuda con fondo y ruido; en las páginas de prueba no borró líneas de tabla. Hay que
+  comparar con y sin la opción si cambia la calidad del escaneo.
+- Guardar el PDF OCR en =data/ocr/= (generado, no versionado).
+- En este corpus, las páginas 101-103 y 121-130 están giradas 90° dentro de la página. El código
+  las rota antes del OCR con =pypdf=; la opción =--rotate-pages= de OCRmyPDF no las detecta de
+  forma fiable.
+
+*** Paso 2 — Extracción de estructura con Docling
+
+Objetivo: convertir cada PDF en Markdown/JSON con orden de lectura, secciones, tablas y referencia
+de página.
+
+Salida esperada:
+
+- =data/processed/nts-246-parte-1.md=
+- =data/processed/nts-246-parte-1.json=
+- Marcadores de página del tipo =<!-- pagina: 22 -->=.
+- Tablas en Markdown o HTML, no como texto suelto.
+
+Configuración conceptual:
+
+- Activar análisis de layout y reconstrucción de tablas (TableFormer).
+- Desactivar imágenes de página y otros artefactos que no se necesitan.
+- Usar el texto del PDF OCR; si Docling vuelve a hacer OCR, comparar calidad y elegir un solo
+  camino para no duplicar errores.
+
+Si una tabla sale mal:
+
+1. Revisar si el problema es el OCR o la detección de líneas.
+2. Probar Docling con otra configuración de table structure.
+3. Probar Marker/MinerU solo para esa página o documento.
+4. Como último recurso, transcribir a mano la tabla crítica y marcarla como =revisada_manual=.
+
+*** Paso 3 — Limpieza y normalización
+
+La limpieza se hace sobre el Markdown/JSON extraído, no sobre el PDF.
+
+*Reglas de texto:*
+
+- Eliminar encabezados y pies repetidos detectados por frecuencia entre páginas
+  (por ejemplo, "NTS N° 246-MINSA/DGIESP-2026" y "Norma Técnica de Salud...").
+- Eliminar números de página sueltos, pero *conservar la página impresa en metadatos*.
+- Unir palabras cortadas por guion al final de línea (=inmuni-\\nzaciones= → =inmunizaciones=).
+- Normalizar espacios, saltos de línea, comillas, guiones y caracteres Unicode (NFC).
+- Conservar tildes, signos =°=, =N°=, unidades (=mcg=, =ml=, =°C=) y referencias a normas.
+- Normalizar unidades solo en contexto numérico: =0.5 mi= → =0.5 ml=, =9,5 mí= → =9,5 ml=,
+  =+2'Ca+8%C= → =+2 °C a+8 °C=.
+- No adivinar puntos decimales perdidos. =05 ml= se conserva y se marca con =revisar=true=.
+- Marcar también campos =DOSIS (CANTIDAD)= con formato no numérico (por ejemplo, =Di5ami=).
+- No aplicar corrección ortográfica clínica automática. Un cambio de "0,5 ml" a "5 ml" sería
+  grave. Las variantes de OCR se corrigen solo si están en una lista blanca revisada.
+- Eliminar bloques que sean únicamente sellos, firmas o texto de digitalización.
+
+*Reglas de tablas:*
+
+- Unir celdas partidas en varias líneas.
+- Quitar filas de encabezado repetidas en la misma tabla.
+- Conservar notas al pie y llamadas (a, b, c) dentro de la celda o como nota de la tabla.
+- Marcar celdas vacías de forma explícita, sin inventar contenido.
+- Si una tabla continúa en la página siguiente, mantener el título y el encabezado en cada fila
+  resultante.
+- No fusionar tablas distintas solo porque están en páginas consecutivas.
+
+*Reglas de páginas:*
+
+- Usar la página impresa que aparece al pie.
+- Si no se detecta, usar un mapa de desplazamiento: parte 1 = índice; parte 2 = índice + 97.
+- Cada chunk debe poder responder "¿en qué página está esto?".
+
+*** Paso 4 — Control de calidad de la ingesta
+
+Antes de indexar:
+
+- Verificar que el 100% de las páginas tenga texto.
+- Revisar manualmente una muestra de 10 páginas: una de texto corrido, una ficha, una tabla
+  simple, una tabla compleja, una tabla partida, una con sellos.
+- Revisar al 100% las tablas críticas: calendario/esquema, dosis, intervalos, conservación y
+  contraindicaciones.
+- Contar tablas extraídas y compararlas con una inspección visual.
+- Registrar páginas problemáticas en =data/processed/incidencias.md=.
+- Omitir formularios en blanco (páginas 101-103 y 121-139) para no contaminar el índice.
+- Permitir un Markdown corregido a mano en =data/overrides/nts-246-parte-N-pPAGINA.md= o en
+  =data/overrides/<nombre-completo-del-pdf>-pPAGINA.md=.
+
+*Criterio de aceptación:* ninguna tabla crítica con celdas desplazadas; texto legible y sin
+encabezados repetidos; toda página con número impreso correcto.
+
+** 6.3 Formato de los chunks**
+
+=chunks.jsonl= será la fuente de verdad. Cada línea tendrá un objeto como este:
+
+#+begin_src json
+{
+  "id": "nts246-p22-6.1.1.8-composicion",
+  "doc_id": "nts-246-2026",
+  "texto": "Vacuna antipoliomielítica oral (APO/Sabin) — Composición: Una dosis de 2 gotas contiene virus de polio...",
+  "tipo": "ficha_campo",
+  "seccion": "6.1.1.8 Vacuna antipoliomielítica oral de poliovirus (APO o Sabin)",
+  "pagina": 22,
+  "vacuna": "APO/VOP",
+  "tabla": null,
+  "revisado_manual": false,
+  "hash_origen": "sha256:..."
+}
+#+end_src
+
+Campos mínimos:
+
+- =id=: estable y determinista (documento + página + tipo + contador).
+- =texto=: contenido que se vectoriza y se muestra al LLM.
+- =tipo=: =texto=, =ficha_campo=, =tabla_fila= o =tabla_completa=.
+- =seccion=, =pagina=, =vacuna=, =tabla=: metadatos para filtrar y citar.
+- =doc_id=: identificador del documento.
+- =revisado_manual=: indica si la fuente fue validada.
+
+Los valores nulos (=null=) se conservan en =chunks.jsonl= para facilitar la inspección, pero se
+omiten al escribir metadatos en ChromaDB, que no admite ese tipo.
+
+* 7. Chunking
+
+No se debe fragmentar el documento con una ventana fija. La estructura de la norma es la que manda.
+
+| Tipo de contenido       | Regla                                                                 |
+|-------------------------+-----------------------------------------------------------------------|
+| Texto corrido           | 400–600 tokens, corte por párrafo, solapamiento de 60–80 tokens       |
+| Ficha de vacuna         | Un chunk por campo (composición, esquema, conservación, etc.)          |
+| Tabla pequeña           | Un chunk por tabla completa, con título y encabezados                  |
+| Tabla grande            | Un chunk por fila, repitiendo encabezado y título                      |
+| Anexos                  | Igual que tabla; conservar número y nombre del anexo                   |
+
+Reglas adicionales:
+
+- Antes del texto de cada ficha se repite el nombre de la vacuna y el campo:
+  "Vacuna SPR — Composición: ...". Esto mejora la recuperación y evita chunks huérfanos.
+- Cada fila de tabla incluye la fila de encabezado:
+  "Vacuna: DPT | Evento: Anafilaxia | Tiempo de aparición: 0 a 1 hora | Tasa: 20 por millón".
+- Si una tabla tiene 12 filas o menos y no supera ~600 tokens, se indexa completa; si es más
+  grande, se indexa por filas.
+- No se parte una fila de tabla a la mitad.
+- El solapamiento solo se usa en texto corrido, no en fichas ni filas.
+- El texto del chunk debe ser autosuficiente: si dice "Ver ítem 6.3", se conserva la referencia,
+  pero se añade la sección de origen en los metadatos.
+
+* 8. Indexación y recuperación
+
+** 8.1 Embeddings
+
+- Modelo recomendado: =sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2= (384
+  dimensiones, multilingüe, ~220 MB), servido por *FastEmbed* sobre ONNX Runtime.
+- Ventaja: la imagen Docker de consulta no necesita PyTorch; solo ONNX Runtime.
+- Alternativa si se necesita más calidad y hay recursos: =intfloat/multilingual-e5-large=.
+- Normalizar los vectores y usar similitud coseno.
+- El modelo se configura por variable de entorno; no se codifica en el código.
+
+** 8.2 ChromaDB
+
+- Una colección persistente: =normativa_vacunacion=.
+- Directorio: =data/index/chroma/=.
+- Cada registro incluye =document=, =embedding=, =metadata= e =id=.
+- Los IDs se generan de forma determinista para que la ingesta sea idempotente.
+- El índice se reconstruye desde =chunks.jsonl= si se cambia el modelo de embeddings.
+
+** 8.3 Búsqueda híbrida
+
+El corpus es pequeño, así que BM25 se puede construir en memoria al iniciar el servicio. No hace
+falta Elasticsearch ni otro servicio.
+
+- Búsqueda vectorial: top 10.
+- Búsqueda BM25: top 10, sobre texto normalizado (minúsculas y sin tildes solo para el índice
+  léxico).
+- Fusión con Reciprocal Rank Fusion (RRF), =k= 60.
+- Deduplicar por =id= y por contenido.
+- Entregar al LLM los 6–8 mejores fragmentos, con un máximo de ~4.000 tokens de contexto.
+- La búsqueda léxica es importante para siglas y nombres exactos: SPR, DPT, VPH, APO, VOP, BCG,
+  Hib, TT, DT, ESAVI.
+
+Filtros:
+
+- La API puede recibir filtros opcionales (=vacuna=, =seccion=, =pagina=).
+- La detección automática de vacuna en la pregunta puede usarse como *refuerzo*, no como filtro
+  excluyente, para no perder resultados por una alias no reconocido.
+- Las equivalencias (por ejemplo, "papiloma" → VPH) viven en un pequeño léxico revisado, no en el
+  LLM.
+
+Si se busca aún más simplicidad, BM25 es la pieza opcional: el sistema puede funcionar solo con
+vectores. Se recomienda mantenerla porque la norma usa muchas siglas y nombres exactos, y el costo
+de implementación es bajo.
+
+* 9. Generación de respuestas
+
+Reglas del prompt:
+
+1. Responder en español y de forma breve.
+2. Usar *únicamente* los fragmentos recuperados.
+3. Citar siempre: =[NTS 246, p. 23, sección 6.1.1.8]=.
+4. Si los fragmentos no alcanzan, responder: "No se encontró esa información en la normativa
+   cargada." No completar con conocimiento general.
+5. No calcular ni inferir dosis, edades o intervalos que no estén escritos. Se puede resumir,
+   pero no extrapolar.
+6. Diferenciar lo que dice la norma de cualquier comentario general.
+7. Temperatura 0 y salida corta.
+
+El proveedor del LLM se configura por entorno, con interfaz compatible con OpenAI:
+
+- Local: Ollama en =http://localhost:11434/v1=.
+- Remoto: cualquier API compatible.
+
+No se acopla el proyecto a un proveedor ni a un modelo concreto.
+
+* 10. API FastAPI
+
+| Método | Ruta              | Función                                                   |
+|--------+-------------------+-----------------------------------------------------------|
+| GET    | =/salud=          | Estado del servicio, cantidad de chunks y modelo cargado   |
+| POST   | =/consulta=       | Recibe una pregunta y devuelve respuesta + fuentes         |
+| POST   | =/buscar=         | Solo recuperación, sin LLM; útil para depurar             |
+
+Ejemplo de petición:
+
+#+begin_src json
+{
+  "pregunta": "¿Cuál es la finalidad de la norma?",
+  "k": 6,
+  "filtros": {}
+}
+#+end_src
+
+Ejemplo de respuesta (el contenido real se obtiene del corpus):
+
+#+begin_src json
+{
+  "respuesta": "La norma tiene por finalidad contribuir a disminuir la morbimortalidad causada por enfermedades inmunoprevenibles. [NTS 246, p. 1, sección I. Finalidad]",
+  "fuentes": [
+    {
+      "documento": "NTS N° 246-MINSA/DGIESP-2026",
+      "pagina": 1,
+      "seccion": "I. Finalidad",
+      "tipo": "texto",
+      "fragmento": "...",
+      "score": 0.87,
+      "revisar": false,
+      "notas": null
+    }
+  ],
+  "modo": "extractivo",
+  "formato": "markdown",
+  "tiempo_ms": 840
+}
+#+end_src
+
+Criterios:
+
+- Sin autenticación en v1; el servicio se ejecuta localmente.
+- =respuesta= y =fragmento= se devuelven en Markdown (listas, tablas, énfasis).
+- Las listas inline de celdas se convierten en viñetas o =<br>•= para que el cliente las renderice.
+- Validación con Pydantic.
+- Errores claros si el índice no está construido o si el LLM no responde.
+- Límite de longitud de pregunta y de =k=.
+- No streaming en v1.
+
+* 11. Estructura del proyecto
+
+#+begin_example
+vacuinfo/
+├── pdf/                         # PDF originales (no se modifican)
+├── data/                        # generado; no se versiona
+│   ├── ocr/                     # PDF con capa de texto
+│   ├── processed/               # Markdown/JSON limpio + incidencias
+│   ├── tables/                  # Markdown + rows.jsonl + meta.json por tabla
+│   ├── chunks.jsonl             # fuente de verdad de la ingesta
+│   ├── manifest.json
+│   └── index/chroma/            # índice persistente
+├── src/vacuinfo/
+│   ├── config.py                # variables de entorno y rutas
+│   ├── data/
+│   │   ├── vacuinfo.user-words  # vocabulario OCR
+│   │   └── vacuinfo.patterns    # patrones numéricos
+│   ├── ingest/
+│   │   ├── ocr.py               # envoltura de OCRmyPDF
+│   │   ├── extract.py           # Docling → Markdown/JSON
+│   │   ├── clean.py             # limpieza de texto y tablas
+│   │   ├── normalize.py         # unidades y banderas de revisión
+│   │   ├── chunk.py             # fichas, secciones y tablas
+│   │   └── index.py             # embeddings + Chroma
+│   ├── rag/
+│   │   ├── retrieve.py          # vectorial + BM25 + RRF
+│   │   └── answer.py            # prompt, LLM y citas
+│   ├── api.py                   # FastAPI
+│   └── cli.py                   # ingestar, consultar, evaluar
+├── eval/
+│   └── preguntas.jsonl          # preguntas y respuestas esperadas
+├── tests/
+├── scripts/
+│   ├── ingestar.sh
+│   └── setup_ocr.sh
+├── .env.example
+├── Dockerfile
+├── docker-compose.yml
+├── Makefile
+├── pyproject.toml
+├── README.org
+└── PLAN.org
+#+end_example
+
+Se evita una capa de abstracción por cada concepto. =clean.py= y =chunk.py= pueden compartir
+utilidades, pero la separación permite probar cada etapa y volver a ejecutar solo lo necesario.
+
+* 12. Stack y dependencias
+
+** 12.1 Python
+
+- Python 3.11 o 3.12.
+- =fastapi= y =uvicorn= para la API.
+- =pydantic-settings= para configuración.
+- =chromadb= para la base vectorial.
+- =fastembed= + =onnxruntime= para embeddings, sin PyTorch en runtime.
+- =rank-bm25= para la búsqueda léxica.
+- =httpx= o =openai= para el cliente del LLM.
+- =ocrmypdf= (Python y CLI) y =docling= para la ingesta.
+- =pytest= para pruebas.
+
+** 12.2 Sistema
+
+- Tesseract con el paquete de idioma español (=tessdata_best=).
+- Ghostscript.
+- =unpaper= si se usa =--clean= de OCRmyPDF.
+
+Ejemplo en Arch Linux:
+
+#+begin_src bash
+sudo pacman -S tesseract tesseract-data-spa ghostscript unpaper
+#+end_src
+
+La primera ejecución descargará los modelos de Docling y de embeddings. Hay que prever espacio en
+disco y conexión a internet.
+
+** 12.3 Configuración
+
+#+begin_example
+VACUINFO_PDF_DIR=pdf
+VACUINFO_DATA_DIR=data
+VACUINFO_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+VACUINFO_CHROMA_COLLECTION=normativa_vacunacion
+VACUINFO_LLM_BASE_URL=http://localhost:11434/v1
+VACUINFO_LLM_MODEL=qwen2.5:7b
+VACUINFO_LLM_API_KEY=ollama
+VACUINFO_TOP_K=6
+#+end_example
+
+** 12.4 Docker de consulta
+
+La imagen de runtime no incluye OCR, Docling ni PyTorch. Incluye FastAPI, ChromaDB, FastEmbed y el
+modelo de embeddings. La base ya construida se monta como volumen:
+
+#+begin_src bash
+docker compose up --build -d
+#+end_src
+
+- =docker-compose.yml= monta =./data/index= en =/app/data/index=.
+- El contenedor no necesita los PDF, =chunks.jsonl= ni =models/tessdata=.
+- Si no se define =VACUINFO_LLM_BASE_URL=, responde en modo extractivo con citas.
+- Para Ollama en el host: =VACUINFO_LLM_BASE_URL=http://host.docker.internal:11434/v1=.
+
+* 13. Evaluación
+
+Se construirá un conjunto pequeño pero representativo de 20–30 preguntas. La versión inicial ya
+incluye 9 preguntas evaluables y 2 fuera de alcance; el resto se irá agregando con las pruebas.
+
+- 8 de datos exactos (edad, dosis, intervalo, vía, conservación).
+- 5 de fichas de vacuna.
+- 5 de tablas y anexos.
+- 4 de casos especiales.
+- 3 fuera de alcance, para comprobar que el sistema se abstiene.
+
+Cada pregunta tendrá: pregunta, respuesta esperada, página, sección y palabras clave.
+
+Métricas:
+
+- *Hit@5*: la fuente correcta aparece entre los 5 primeros fragmentos.
+- *Cita correcta*: la respuesta cita la página/sección que sustenta el dato.
+- *Corrección*: revisión manual de la respuesta contra el texto.
+- *Abstención*: porcentaje de preguntas fuera de alcance respondidas con "no se encontró".
+
+Criterios de aceptación propuestos:
+
+- 100% de tablas críticas revisadas manualmente.
+- Hit@5 ≥ 0,85 en el conjunto de evaluación.
+- 0 respuestas con datos inventados en la muestra revisada.
+- Toda respuesta con al menos una cita verificable.
+
+* 14. Roadmap
+
+| Fase | Entregable                                                     | Criterio de aceptación                              | Estimación |
+|------+----------------------------------------------------------------+-----------------------------------------------------+------------|
+| 0    | Inventario, manifiesto y prueba de OCR en 5 páginas             | Orientación correcta y texto legible                 | 0,5 día    |
+| 1    | OCR de los dos PDF y extracción con Docling                     | 140 páginas con texto; tablas de muestra correctas   | 2–3 días   |
+| 2    | Limpieza, chunks.jsonl e incidencias                            | Muestra y tablas críticas validadas                  | 2 días     |
+| 3    | Índice Chroma + BM25 + CLI de consulta                          | Búsquedas correctas sin LLM                          | 1–2 días   |
+| 4    | API FastAPI + generación con citas y abstención                 | Los 3 endpoints funcionan; respuestas citadas       | 2 días     |
+| 5    | Evaluación, README y demostración                               | Métricas mínimas y guion de demo                     | 1–2 días   |
+
+* 15. Riesgos y mitigaciones
+
+| Riesgo                                              | Mitigación                                                              |
+|-----------------------------------------------------+-------------------------------------------------------------------------|
+| OCR deficiente en tablas o sellos                   | Revisión manual, Docling, fallback a Marker/MinerU, transcripción puntual |
+| Tablas partidas entre páginas                       | Chunks por fila con encabezado; validación de tablas críticas            |
+| Valores de dosis o edad mal extraídos                | No corregir automáticamente; revisión humana y citas obligatorias        |
+| Alucinación del LLM                                 | Prompt restrictivo, temperatura 0, abstención y evaluación               |
+| Deriva de alcance                                   | Una norma y dos PDF; lista explícita de lo que queda fuera               |
+| Dependencia de un proveedor de LLM                  | Interfaz compatible con OpenAI y configuración por entorno               |
+| Equipo sin GPU                                      | Embeddings pequeños, Docling en CPU y LLM local pequeño o API            |
+| Índice desactualizado tras cambiar el chunking      | Reconstruir siempre desde chunks.jsonl y registrar la versión            |
+
+* 16. Fuera de alcance / mejoras futuras
+
+No se incluyen en v1, pero quedan como mejoras naturales:
+
+- Reranking con cross-encoder.
+- Expansión de consultas y desambiguación de siglas con un modelo.
+- Interfaz web o chat.
+- Carga de nuevas normas y administración de documentos.
+- Historial de conversación.
+- Métricas automáticas de fidelidad con un LLM juez.
+
+Se documentan para que la ausencia sea una decisión, no un olvido.
+
+* 17. Entregables finales
+
+1. *Pipeline de ingesta reproducible*: OCR, extracción, limpieza, chunks y manifiesto.
+2. *Base vectorial construida*: ChromaDB persistente y =chunks.jsonl=.
+3. *API FastAPI*: =/salud=, =/consulta= y =/buscar=, con respuestas citadas.
+4. *Evaluación*: conjunto de preguntas y resultados.
+5. *Documentación*: =README.org= con objetivo, arquitectura, puesta en marcha y limitaciones;
+   =PLAN.org= con las decisiones técnicas.
+6. *Demostración*: 5–8 consultas representativas, incluyendo una fuera de alcance.
+
+* 18. Método de decisión y registro de arquitectura (ADR)
+
+Este proyecto no documenta solo el resultado final. También registra el problema, las alternativas
+consideradas, la evidencia usada y las consecuencias de cada decisión. El objetivo es que otra
+persona pueda entender por qué el sistema quedó así y repetir el mismo método en casos nuevos.
+
+** 18.1 Principios del método
+
+1. *Definir primero qué significa “correcto”.* En este proyecto, un dato correcto debe ser
+   verificable, citar su página y no depender de una inferencia del LLM.
+2. *Separar los síntomas por capa.* Un decimal perdido puede ser OCR, estructura de tabla,
+   normalización o recuperación. No se cambia toda la pipeline por un síntoma.
+3. *Medir sobre casos críticos antes de generalizar.* Se usan páginas con dosis, tablas partidas,
+   listas y valores numéricos.
+4. *Preferir lo determinista y auditable.* OCR, reglas, validaciones y overrides revisados antes que
+   un modelo generativo para reconstruir datos.
+5. *Conservar la procedencia.* Documento, página, sección, tabla y fila deben poder rastrearse.
+6. *Elegir el cambio más pequeño que resuelva el problema.* Una mejora global solo se adopta si la
+   evidencia muestra que supera al baseline.
+7. *Registrar también lo descartado.* Una alternativa descartada con evidencia evita repetir el
+   mismo experimento.
+8. *Definir cuándo revisar la decisión.* Toda decisión debe tener una señal de reevaluación.
+
+** 18.2 Plantilla de decisión
+
+#+begin_example
+ADR-XXX: Título corto
+
+Contexto:
+  Qué problema se observó y por qué importa.
+
+Opciones:
+  A. ...
+  B. ...
+  C. ...
+
+Criterios:
+  Veracidad, trazabilidad, reproducibilidad, esfuerzo, costo, mantenibilidad.
+
+Evidencia:
+  Páginas, pruebas, métricas o muestras usadas.
+
+Decisión:
+  Qué se eligió y por qué.
+
+Consecuencias:
+  Ventajas, costos, limitaciones y deuda pendiente.
+
+Revisar si:
+  Señal concreta que obligaría a cambiar la decisión.
+#+end_example
+
+** 18.3 Decisiones registradas
+
+*** ADR-001 — Calidad del OCR
+
+*Contexto:* los PDF son escaneos de ~150 ppp. Se observaron errores como `0.5 ml` → `0.5 mi`,
+`05 ml` y `Di5ami`.
+
+*Opciones consideradas:*
+
+- Mantener `tessdata_fast` y corregir solo con reglas.
+- Usar `tessdata_best`, 300 ppp, LSTM y PSM 3.
+- Hacer OCR por celda con lista blanca numérica.
+- Usar un VLM para reconstruir toda la página.
+
+*Evidencia:* se compararon páginas críticas (14, 15, 22, 23, 34) con distintas configuraciones.
+`tessdata_best` + 300 ppp + PSM 3 + vocabulario del dominio mejoró unidades y claves como
+`DOSIS (CANTIDAD)`. La normalización contextual eliminó los casos de número seguido de `mi/mí`
+sin tocar palabras normales.
+
+*Decisión:* usar `tessdata_best`, 300 ppp, LSTM, PSM 3, `user_words`, `user_patterns` y
+normalización contextual. El OCR por celda queda como siguiente fase para tablas críticas.
+
+*Consecuencias:* OCR más lento y PDFs OCR más grandes; a cambio, menos errores de unidades y
+valores dudosos marcados. No se inventan decimales: `05 ml` se marca para revisión.
+
+*Revisar si:* siguen apareciendo valores de dosis no legibles o errores de decimales en tablas
+críticas.
+
+*** ADR-002 — Extracción centrada en tablas
+
+*Contexto:* la exportación por página (`export_to_markdown(page_no=...)`) rompe la identidad de
+una tabla que cruza páginas. Una ficha puede aparecer como tres tablas con encabezados repetidos,
+filas partidas y celdas vacías.
+
+*Opciones consideradas:*
+
+- Mantener extracción por página.
+- Reemplazar Docling por un VLM de página completa.
+- Reconstruir todas las tablas manualmente.
+- Extraer tablas como objetos, asociarlas a sección/subsección, fusionar de forma conservadora y
+  generar Markdown + JSONL para revisión.
+
+*Evidencia:* Docling expone `document.tables` con página, bounding box, filas y columnas. En la
+ficha de Hepatitis B se verificó que las tablas de las páginas 14-16 tienen columnas compatibles,
+la anterior termina al pie y la siguiente empieza al inicio. Un VLM (`Granite-Docling-258M`) devolvió
+solo el encabezado en la página 15, por lo que no se adoptó.
+
+*Decisión:* se implementó el pipeline table-centric y se evaluó, pero se *revirtió*. La extracción
+automática de tablas no detectó encabezados como 6.1.1.6 y 6.1.1.10 y asoció tablas a secciones
+incorrectas. El coste de revisar y corregir esas tablas era mayor que el de mantener la extracción
+por página con overrides puntuales.
+
+*Consecuencias:* se vuelve a la extracción por página (`data/chunks.jsonl` con tablas locales), se
+mantienen las banderas de revisión y los overrides de página. Las tablas complejas siguen siendo
+una limitación conocida y se corrigen con overrides cuando es necesario.
+
+*Revisar si:* se valida una detección de encabezados y una fusión multipágina contra un gold set de
+tablas críticas, con una mejora clara y medible sobre la extracción por página.
+
+*** ADR-003 — Dos canales de tablas (descartada)
+
+Se descartó junto con ADR-002. La separación texto/tabla mejoraba la presentación, pero dependía de
+una detección de tablas y encabezados que no fue fiable en este corpus. Se mantiene una sola
+extracción por página y los overrides por página.
+
+*** ADR-004 — Veracidad antes que cobertura
+
+*Contexto:* una respuesta fluida con una dosis equivocada es peor que una abstención.
+
+*Decisión:* no usar el LLM para extraer ni completar valores. Los valores dudosos se marcan y se
+listan en =data/processed/revision.md=; la API expone =revisar= y =notas=. Las tablas críticas se
+corrigen con overrides de página revisados manualmente.
+
+*Consecuencias:* algunas respuestas incluirán advertencias y la cobertura será menor hasta que se
+revisen las tablas críticas.
+
+*Revisar si:* la tasa de tablas no revisadas impide responder las preguntas más importantes.
+
+*** ADR-005 — Formato de respuesta
+
+*Contexto:* las listas dentro de celdas y las tablas se perdían al colapsar espacios.
+
+*Decisión:* `respuesta` y `fragmento` se devuelven en Markdown. Las tablas reciben fila
+separadora; las listas inline `+`/`*` se convierten en viñetas. El cliente renderiza el Markdown.
+
+*Consecuencias:* el API no devuelve HTML renderizado; el cliente debe renderizar Markdown.
+
+*Revisar si:* el cliente necesita HTML directamente o una interfaz web.
+
+** 18.4 Cómo aplicar este método a una decisión futura
+
+1. Escribir el problema en una frase y el costo de equivocarse.
+2. Elegir una muestra pequeña y representativa; no decidir con una sola página.
+3. Medir el baseline antes de cambiar.
+4. Enumerar al menos tres alternativas, incluida “no cambiar”.
+5. Comparar con criterios explícitos: veracidad, trazabilidad, reproducibilidad, esfuerzo y
+   mantenibilidad.
+6. Implementar la alternativa más pequeña que pueda evaluarse.
+7. Medir de nuevo con el mismo conjunto.
+8. Registrar el ADR con evidencia y consecuencias.
+9. Definir la señal de revisión.
+
+*Criterio rector:* si una decisión mejora la presentación pero empeora la veracidad o la
+trazabilidad, no se adopta.
+
+* Anexo A — Criterios para decidir entre Docling y Marker
+
+Probar la misma página compleja (por ejemplo, el Anexo 8, p. 98) con ambos y comparar:
+
+- ¿Se conservan las columnas y las filas?
+- ¿Se mantienen los encabezados?
+- ¿Se pierden notas al pie?
+- ¿El orden de lectura es correcto?
+- ¿El tiempo de ejecución es razonable en CPU?
+
+Se elige la herramienta que produzca la tabla correcta con menos intervención manual. La decisión se
+registra en =data/manifest.json= y en este plan.
+
+* Anexo C — Evaluación de un modelo VLM para tablas
+
+Se probó =Granite-Docling-258M= con el pipeline VLM de Docling sobre la página 15
+(Hepatitis B), una de las tablas más problemáticas, usando tanto la página original de ~150 ppp
+como la versión OCR de 300 ppp.
+
+Resultado: el modelo devolvió únicamente el encabezado de la página y no reconstruyó la tabla.
+Fue peor que Docling TableFormer y añadía tiempo de CPU y un modelo adicional. Por eso se mantiene
+la extracción por página y las tablas críticas se corrigen con overrides manuales.
+
+La alternativa que sí tiene sentido si se necesita más precisión es el OCR por celda con lista
+blanca numérica, no reemplazar toda la extracción por un VLM de página completa.
+
+* Anexo B — Definición de "terminado" para la ingesta
+
+- [ ] Los 2 PDF están registrados con hash y número de páginas.
+- [ ] Las 140 páginas tienen texto OCR.
+- [ ] No hay páginas rotadas incorrectamente.
+- [ ] Los encabezados y pies repetidos fueron eliminados.
+- [ ] Las fichas de vacuna están separadas por campo.
+- [ ] Las tablas críticas fueron revisadas manualmente.
+- [ ] =chunks.jsonl= no contiene fragmentos vacíos ni solo sellos.
+- [ ] Cada chunk tiene página impresa y sección.
+- [ ] El índice se puede reconstruir desde cero sin volver a OCR.
