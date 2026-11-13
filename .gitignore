@@ -21,3 +21,6 @@ models/fastembed/
 dist/
 build/
 *.egg-info/
+
+# Índice local de CodeGraph
+.codegraph/
