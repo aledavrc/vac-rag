@@ -26,14 +26,14 @@
 
 ## 2. Mapeos ambiguos resueltos (obligatorios de la tarea)
 
-| Clave OCR rota (fuente) | Clave canónica | Ficha | Evidencia / decisión |
-|---|---|---|---|
-| `CO CUBACIÓN` | `ESQUEMA DE VACUNACIÓN` | 6.1.1.23 Meningococo | Valor "02 dosis: a los 13 meses y 15 meses" = esquema. |
-| `TIPO INMUNIZACIÓN` | `TIPO DE VACUNA` | 6.1.1.24 Anticuerpo monoclonal | Es una inmunización, no una vacuna; el campo "tipo" ocupa la casilla de `TIPO DE VACUNA`. |
-| `¿ POST RES` | `POSIBLES EFECTOS POST-VACUNALES` | 6.1.1.18 HVA | Valor "Las reacciones en cuestión son leves…" = efectos post-vacunales. |
-| `E` | `CONSERVACIÓN DE LA VACUNA` | 6.1.1.8 APO | Valor "Luego de la apertura del frasco se puede conservar 4 semanas." es conservación (nota: falta `+2°C a +8°C` en el OCR). |
-| `INCAS A` | `JERINGAS A UTILIZAR` | 6.1.1.14 AMA | Valor "Para administrar: jeringa descartable de 1ml…" = jeringas. |
-| `ESQUEMA` | `ESQUEMA DE VACUNACIÓN` | 6.1.1.24 Anticuerpo monoclonal | Valor "En recién nacidos de madres no vacunadas…" = esquema. |
+| Clave OCR rota (fuente) | Clave canónica                    | Ficha                          | Evidencia / decisión                                                                                                         |
+|-------------------------|-----------------------------------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------|
+| `CO CUBACIÓN`           | `ESQUEMA DE VACUNACIÓN`           | 6.1.1.23 Meningococo           | Valor "02 dosis: a los 13 meses y 15 meses" = esquema.                                                                       |
+| `TIPO INMUNIZACIÓN`     | `TIPO DE VACUNA`                  | 6.1.1.24 Anticuerpo monoclonal | Es una inmunización, no una vacuna; el campo "tipo" ocupa la casilla de `TIPO DE VACUNA`.                                    |
+| `¿ POST RES`            | `POSIBLES EFECTOS POST-VACUNALES` | 6.1.1.18 HVA                   | Valor "Las reacciones en cuestión son leves…" = efectos post-vacunales.                                                      |
+| `E`                     | `CONSERVACIÓN DE LA VACUNA`       | 6.1.1.8 APO                    | Valor "Luego de la apertura del frasco se puede conservar 4 semanas." es conservación (nota: falta `+2°C a +8°C` en el OCR). |
+| `INCAS A`               | `JERINGAS A UTILIZAR`             | 6.1.1.14 AMA                   | Valor "Para administrar: jeringa descartable de 1ml…" = jeringas.                                                            |
+| `ESQUEMA`               | `ESQUEMA DE VACUNACIÓN`           | 6.1.1.24 Anticuerpo monoclonal | Valor "En recién nacidos de madres no vacunadas…" = esquema.                                                                 |
 
 ## 3. Mapeos adicionales (resto de claves OCR rotas del corpus)
 
@@ -62,48 +62,48 @@ Claves **fusionadas en una celda** (Fase 5):
 
 ## 4. Valores dudosos → `null` + `revisar: true` (no inferidos)
 
-| Ficha | Clave dudosa | Motivo |
-|---|---|---|
-| 6.1.1.12 SR | `DOSIS (CANTIDAD)` | OCR ilegible (`**`); no se infiere. |
-| 6.1.1.16 dT adulto | `DOSIS (CANTIDAD)` | OCR ilegible (`5 MI`); no se infiere. |
-| 6.1.1.16 dT adulto | `CONSERVACIÓN DE LA VACUNA` | Temperatura de conservación ilegible en OCR; solo es legible "…conservar 4 semanas". |
-| 6.1.1.17 Tdap | `DOSIS (CANTIDAD)` | Celda vacía en el OCR; no se infiere. |
-| 6.1.1.23 Meningococo | `DOSIS (CANTIDAD)` | OCR ilegible (`o5m!`); no se infiere. |
+| Ficha                | Clave dudosa                | Motivo                                                                               |
+|----------------------|-----------------------------|--------------------------------------------------------------------------------------|
+| 6.1.1.12 SR          | `DOSIS (CANTIDAD)`          | OCR ilegible (`**`); no se infiere.                                                  |
+| 6.1.1.16 dT adulto   | `DOSIS (CANTIDAD)`          | OCR ilegible (`5 MI`); no se infiere.                                                |
+| 6.1.1.16 dT adulto   | `CONSERVACIÓN DE LA VACUNA` | Temperatura de conservación ilegible en OCR; solo es legible "…conservar 4 semanas". |
+| 6.1.1.17 Tdap        | `DOSIS (CANTIDAD)`          | Celda vacía en el OCR; no se infiere.                                                |
+| 6.1.1.23 Meningococo | `DOSIS (CANTIDAD)`          | OCR ilegible (`o5m!`); no se infiere.                                                |
 
 ## 5. Campos ausentes de la fuente (no esperados)
 
-| Ficha | Campo ausente | Motivo |
-|---|---|---|
-| 6.1.1.8 APO (oral) | `JERINGAS A UTILIZAR` | Vacuna oral; la fuente no lista jeringas. |
-| 6.1.1.9 Rotavirus (oral) | `JERINGAS A UTILIZAR` | Vacuna oral; la fuente no lista jeringas. |
-| 6.1.1.20 Influenza | `DOSIS (CANTIDAD)` | La dosis se describe dentro de `ESQUEMA DE VACUNACIÓN`; no hay fila propia. |
+| Ficha                    | Campo ausente         | Motivo                                                                      |
+|--------------------------|-----------------------|-----------------------------------------------------------------------------|
+| 6.1.1.8 APO (oral)       | `JERINGAS A UTILIZAR` | Vacuna oral; la fuente no lista jeringas.                                   |
+| 6.1.1.9 Rotavirus (oral) | `JERINGAS A UTILIZAR` | Vacuna oral; la fuente no lista jeringas.                                   |
+| 6.1.1.20 Influenza       | `DOSIS (CANTIDAD)`    | La dosis se describe dentro de `ESQUEMA DE VACUNACIÓN`; no hay fila propia. |
 
 ## 6. Resumen por ficha
 
-| Sección | Página | Vacuna | # claves | Dudosas |
-|---|---|---|---|---|
-| 6.1.1.2 Hepatitis B (HvB) | 14 | Hepatitis B | 13 | — |
-| 6.1.1.3 Hexavalente (DPT-HvB-Hib-IPV) | 16 | Hexavalente | 13 | — |
-| 6.1.1.4 Pentavalente (DPT-HvB-Hib) | 17 | Pentavalente | 13 | — |
-| 6.1.1.5 DT pediátrico | 19 | DT pediátrico | 13 | — |
-| 6.1.1.6 Hib | 20 | Hib | 13 | — |
-| 6.1.1.7 IPV | 21 | IPV | 13 | — |
-| 6.1.1.8 APO | 22 | APO/VOP | 12 | — |
-| 6.1.1.9 Rotavirus | 23 | Rotavirus | 12 | — |
-| 6.1.1.10 Antineumocócica | 24 | Neumococo | 13 | — |
-| 6.1.1.11 SPR | 25 | SPR | 13 | — |
-| 6.1.1.12 SR | 27 | SR | 13 | DOSIS (CANTIDAD) |
-| 6.1.1.13 Varicela | 28 | Varicela | 13 | — |
-| 6.1.1.14 AMA | 29 | Fiebre amarilla | 13 | — |
-| 6.1.1.15 DPT | 31 | DTP | 13 | — |
-| 6.1.1.16 dT adulto | 32 | dT adulto | 13 | DOSIS (CANTIDAD), CONSERVACIÓN DE LA VACUNA |
-| 6.1.1.17 Tdap | 33 | Tdap | 13 | DOSIS (CANTIDAD) |
-| 6.1.1.18 HVA | 34 | Hepatitis A | 13 | — |
-| 6.1.1.19 VPH | 35 | VPH | 13 | — |
-| 6.1.1.20 Influenza | 37 | Influenza | 12 | — |
-| 6.1.1.21 VRS | 39 | VRS | 13 | — |
-| 6.1.1.22 Hexavalente VIH | 40 | Hexavalente VIH | 13 | — |
-| 6.1.1.23 Meningococo | 42 | Meningococo | 13 | DOSIS (CANTIDAD) |
-| 6.1.1.24 Anticuerpo monoclonal VRS | 43 | Nirsevimab | 13 | — |
+| Sección                               | Página | Vacuna          | # claves | Dudosas                                     |
+|---------------------------------------|--------|-----------------|----------|---------------------------------------------|
+| 6.1.1.2 Hepatitis B (HvB)             | 14     | Hepatitis B     | 13       | —                                           |
+| 6.1.1.3 Hexavalente (DPT-HvB-Hib-IPV) | 16     | Hexavalente     | 13       | —                                           |
+| 6.1.1.4 Pentavalente (DPT-HvB-Hib)    | 17     | Pentavalente    | 13       | —                                           |
+| 6.1.1.5 DT pediátrico                 | 19     | DT pediátrico   | 13       | —                                           |
+| 6.1.1.6 Hib                           | 20     | Hib             | 13       | —                                           |
+| 6.1.1.7 IPV                           | 21     | IPV             | 13       | —                                           |
+| 6.1.1.8 APO                           | 22     | APO/VOP         | 12       | —                                           |
+| 6.1.1.9 Rotavirus                     | 23     | Rotavirus       | 12       | —                                           |
+| 6.1.1.10 Antineumocócica              | 24     | Neumococo       | 13       | —                                           |
+| 6.1.1.11 SPR                          | 25     | SPR             | 13       | —                                           |
+| 6.1.1.12 SR                           | 27     | SR              | 13       | DOSIS (CANTIDAD)                            |
+| 6.1.1.13 Varicela                     | 28     | Varicela        | 13       | —                                           |
+| 6.1.1.14 AMA                          | 29     | Fiebre amarilla | 13       | —                                           |
+| 6.1.1.15 DPT                          | 31     | DTP             | 13       | —                                           |
+| 6.1.1.16 dT adulto                    | 32     | dT adulto       | 13       | DOSIS (CANTIDAD), CONSERVACIÓN DE LA VACUNA |
+| 6.1.1.17 Tdap                         | 33     | Tdap            | 13       | DOSIS (CANTIDAD)                            |
+| 6.1.1.18 HVA                          | 34     | Hepatitis A     | 13       | —                                           |
+| 6.1.1.19 VPH                          | 35     | VPH             | 13       | —                                           |
+| 6.1.1.20 Influenza                    | 37     | Influenza       | 12       | —                                           |
+| 6.1.1.21 VRS                          | 39     | VRS             | 13       | —                                           |
+| 6.1.1.22 Hexavalente VIH              | 40     | Hexavalente VIH | 13       | —                                           |
+| 6.1.1.23 Meningococo                  | 42     | Meningococo     | 13       | DOSIS (CANTIDAD)                            |
+| 6.1.1.24 Anticuerpo monoclonal VRS    | 43     | Nirsevimab      | 13       | —                                           |
 
 **Totales:** 23 fichas · 296 claves esperadas · 5 valores dudosos (`null`) en 4 fichas.

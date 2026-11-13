@@ -4,8 +4,9 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Iterator
-from difflib import get_close_matches
 from pathlib import Path
+
+from rapidfuzz import fuzz, process
 
 from vacuinfo.config import DOC_TITLE, DocumentSpec, Settings
 from vacuinfo.ingest.clean import (
@@ -61,7 +62,34 @@ KNOWN_FIELDS = (
     "USO SIMULTÁNEO CON OTRAS VACUNAS",
 )
 _KNOWN_BY_NORMALIZED = {normalize_for_match(field): field for field in KNOWN_FIELDS}
-_OCR_FIELD_FIXES = {"ion": "INDICACIÓN"}
+_KNOWN_NORMALIZED = tuple(_KNOWN_BY_NORMALIZED)
+_OCR_FIELD_FIXES = {
+    "ion": "INDICACIÓN",
+    "e": "CONSERVACIÓN DE LA VACUNA",
+    "incas a": "JERINGAS A UTILIZAR",
+    "post res": "POSIBLES EFECTOS POST-VACUNALES",
+    "conservacion de": "CONSERVACIÓN DE LA VACUNA",
+    "administracion via y sitio de": "VÍA Y SITIO DE ADMINISTRACIÓN",
+    "simultaneo otras uso con vacunas": "USO SIMULTÁNEO CON OTRAS VACUNAS",
+    "esquema": "ESQUEMA DE VACUNACIÓN",
+    "tipo inmunizacion": "TIPO DE VACUNA",
+}
+
+# Número de sección colado en la clave (ej. "6.1.1.6. VACUNA CONTRA …").
+_SECTION_PREFIX = re.compile(r"^\d+(?:\.\d+)+\s*\.?\s*")
+# Encabezado de sección sin "##" (ej. "6.1.1.10. VACUNA ANTINEUMOCÓCICA (*)").
+_SECTION_HEADING = re.compile(r"^\d+(?:\.\d+)+\s*\.\s+[A-ZÁÉÍÓÚÑ]")
+
+# Cutoff del matcher fuzzy: por debajo la clave queda sin resolver y se marca.
+_FIELD_FUZZY_CUTOFF = 80.0
+
+
+def _field_similarity(query: str, candidate: str, **_kwargs: object) -> float:
+    """Combina token_sort_ratio (reordenamiento/truncamiento) con ratio
+    (palabras partidas) tomando el máximo; el cutoff descarta falsos positivos."""
+
+    return max(fuzz.token_sort_ratio(query, candidate), fuzz.ratio(query, candidate))
+
 
 # Formularios y registros en blanco de los anexos: no aportan respuestas y
 # generan mucho ruido de OCR.
@@ -74,15 +102,32 @@ def normalize_field_name(key: str) -> str:
     cleaned = re.sub(r"[|\s]+", " ", key).strip(" []").strip()
     if not cleaned:
         return "Continuación"
-    normalized = normalize_for_match(cleaned)
+    stripped = _SECTION_PREFIX.sub("", cleaned).strip()
+    normalized = normalize_for_match(stripped)
     if normalized in _OCR_FIELD_FIXES:
         return _OCR_FIELD_FIXES[normalized]
     if normalized in _KNOWN_BY_NORMALIZED:
         return _KNOWN_BY_NORMALIZED[normalized]
+    # La clave es la cola de un campo canónico (etiqueta truncada).
     for candidate, display in _KNOWN_BY_NORMALIZED.items():
         if len(normalized) >= 5 and candidate.endswith(normalized):
             return display
-    match = get_close_matches(normalized, _KNOWN_BY_NORMALIZED, n=1, cutoff=0.82)
+    if stripped != cleaned:
+        # El encabezado de la sección se coló delante de la clave: recupera el
+        # campo conocido que queda como sufijo (el más largo desempata).
+        suffix: tuple[str, str] | None = None
+        for candidate, display in _KNOWN_BY_NORMALIZED.items():
+            if normalized.endswith(candidate) and len(normalized) > len(candidate):
+                if suffix is None or len(candidate) > len(suffix[0]):
+                    suffix = (candidate, display)
+        if suffix is not None:
+            return suffix[1]
+    match = process.extractOne(
+        normalized,
+        _KNOWN_NORMALIZED,
+        scorer=_field_similarity,
+        score_cutoff=_FIELD_FUZZY_CUTOFF,
+    )
     return _KNOWN_BY_NORMALIZED[match[0]] if match else cleaned
 
 
@@ -140,6 +185,10 @@ def _iter_blocks(text: str) -> Iterator[tuple[str, object]]:
             yield "heading", line
             index += 1
             continue
+        if _SECTION_HEADING.match(line.strip()):
+            yield "heading", line
+            index += 1
+            continue
         if re.match(r"^ANEXO\s+\d+\b", line.strip(), re.IGNORECASE):
             yield "heading", line
             index += 1
@@ -148,7 +197,12 @@ def _iter_blocks(text: str) -> Iterator[tuple[str, object]]:
         paragraph: list[str] = []
         while index < len(lines):
             current = lines[index]
-            if not current.strip() or is_table_line(current) or _is_heading(current):
+            if (
+                not current.strip()
+                or is_table_line(current)
+                or _is_heading(current)
+                or _SECTION_HEADING.match(current.strip())
+            ):
                 break
             paragraph.append(current.strip())
             index += 1
@@ -261,6 +315,40 @@ def _table_structure_flags(rows: list[list[str]]) -> list[str]:
     return flags
 
 
+def _is_ficha(rows: list[list[str]]) -> bool:
+    """Ficha key-value si la 1ª columna no vacía es mayormente KNOWN_FIELDS."""
+
+    labels = [row[0].strip() for row in rows if row[0].strip()]
+    if len(labels) < 2:
+        return False
+    known = sum(1 for label in labels if normalize_field_name(label) in KNOWN_FIELDS)
+    return known >= 2 and known >= 0.5 * len(labels)
+
+
+def _value_columns(rows: list[list[str]]) -> list[int]:
+    """Columnas de valor (>= 1), descartando las que están casi vacías."""
+
+    width = len(rows[0])
+    total = len(rows)
+    kept = [
+        j
+        for j in range(1, width)
+        if sum(1 for row in rows if row[j].strip()) >= 0.5 * total
+    ]
+    return kept or list(range(1, width))
+
+
+def _join_values(cells: list[str]) -> str:
+    """Une celdas de valor no vacías, sin duplicados exactos."""
+
+    seen: list[str] = []
+    for cell in cells:
+        value = cell.strip()
+        if value and value not in seen:
+            seen.append(value)
+    return " | ".join(seen)
+
+
 def _table_chunks(
     rows: list[list[str]],
     *,
@@ -301,23 +389,29 @@ def _table_chunks(
 
     chunks: list[dict] = []
 
-    # Las fichas de vacuna son tablas de dos columnas con etiquetas conocidas.
-    known_fields = sum(
-        1 for row in rows if normalize_field_name(row[0]) in KNOWN_FIELDS and row[0].strip()
-    )
-    if width == 2 and known_fields >= 2:
-        for row_index, (raw_key, value) in enumerate(rows):
-            key = normalize_field_name(raw_key)
-            value = value.strip()
+    # Las fichas de vacuna son tablas key-value cuya 1ª columna es mayormente
+    # etiquetas conocidas; admiten 2 o más columnas (variantes/duplicados).
+    if _is_ficha(rows):
+        value_cols = _value_columns(rows)
+        for row_index, row in enumerate(rows):
+            key = normalize_field_name(row[0])
+            value = _join_values([row[j] for j in value_cols])
             if not value:
                 continue
             text = f"{section} — {key}: {value}" if section else f"{key}: {value}"
+            meta = metadata("ficha_campo", f"{key} {value}")
+            if key != "Continuación" and key not in KNOWN_FIELDS:
+                # Clave OCR no resuelta: se conserva y se marca (no se infiere).
+                meta["revisar"] = True
+                meta["notas"] = "clave no canónica (OCR)"
             chunks.append(
                 {
                     "texto": text,
                     "tipo": "ficha_campo",
-                    "metadata": metadata("ficha_campo", f"{key} {value}"),
+                    "metadata": meta,
                     "_row": row_index,
+                    "_key": key,
+                    "_value": value,
                 }
             )
         return chunks
@@ -439,6 +533,75 @@ def _chunk_page(
     return chunks, section
 
 
+def _field_text(key: str, value: str, section: str) -> str:
+    """Texto de un campo de ficha, con el mismo formato que `_table_chunks`."""
+
+    return f"{section} — {key}: {value}" if section else f"{key}: {value}"
+
+
+def _concat_value(base: str, continuation: str) -> str:
+    """Concatena una continuación al valor previo con un único espacio."""
+
+    return " ".join(part for part in (base.strip(), continuation.strip()) if part)
+
+
+def _merge_ficha_continuations(chunks: list[dict]) -> list[dict]:
+    """Fusiona filas de ficha con clave vacía ("Continuación") en el campo previo.
+
+    Regla (Fase 4, alineada con ADR-002 y ADR-004):
+
+    - Una fila de ficha con clave vacía continúa el valor del último campo de la
+      misma sección; su valor se concatena al campo anterior (misma página o
+      página siguiente) y el chunk huérfano desaparece.
+    - Una clave "TIPO DE VACUNA" abre una ficha nueva y una tabla que no es ficha
+      ("tabla_completa"/"tabla_fila", p. ej. esquemas o anexos) cierra el
+      contexto. Así no se fusionan fichas distintas ni tablas de anexos.
+    - Los chunks "texto" se ignoran a efectos de continuidad: entre una ficha
+      partida y su continuación solo pueden colarse encabezados/pies de página
+      residuales, que no deben romper la ficha.
+    - Si no hay campo previo en la misma sección (continuación huérfana), el
+      chunk se conserva y se marca "revisar" en vez de inferir la clave.
+    """
+
+    merged: list[dict] = []
+    current: dict | None = None
+    for chunk in chunks:
+        tipo = chunk.get("tipo")
+        if tipo != "ficha_campo":
+            if tipo in ("tabla_completa", "tabla_fila"):
+                current = None
+            # "texto": transparente (ver docstring).
+            merged.append(chunk)
+            continue
+
+        key = chunk.get("_key")
+        value = chunk.get("_value", "")
+        section = chunk["metadata"].get("seccion")
+
+        if key == "TIPO DE VACUNA":
+            current = {"chunk": chunk, "key": key, "value": value, "section": section}
+            merged.append(chunk)
+            continue
+
+        if key == "Continuación":
+            if current is not None and current["section"] == section:
+                current["value"] = _concat_value(current["value"], value)
+                current["chunk"]["_value"] = current["value"]
+                current["chunk"]["texto"] = _field_text(
+                    current["key"], current["value"], current["section"]
+                )
+            else:
+                chunk["metadata"]["revisar"] = True
+                chunk["metadata"]["notas"] = "continuación sin campo previo"
+                merged.append(chunk)
+            continue
+
+        current = {"chunk": chunk, "key": key, "value": value, "section": section}
+        merged.append(chunk)
+
+    return merged
+
+
 def _override_path(settings: Settings, spec: DocumentSpec, page: int) -> Path | None:
     """Acepta varios nombres para que el override sea fácil de escribir."""
 
@@ -501,6 +664,8 @@ def build_chunks(settings: Settings, specs: Iterable[DocumentSpec]) -> list[dict
                 section=section,
             )
             doc_chunks.extend(chunks)
+
+        doc_chunks = _merge_ficha_continuations(doc_chunks)
 
         for chunk in doc_chunks:
             normalized, flags = normalize_clinical_text(chunk["texto"])
