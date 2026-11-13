@@ -1,0 +1,280 @@
+% Presentación corta de VacuInfo
+% Compilar con: latexmk -pdf vacuinfo.tex
+\documentclass[aspectratio=169,11pt]{beamer}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-noshorthands]{babel}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+
+\usetheme{Madrid}
+\setbeamertemplate{navigation symbols}{}
+\setbeamerfont{footline}{size=\scriptsize}
+
+\definecolor{azul}{HTML}{1F4E79}
+\definecolor{azulclaro}{HTML}{DEEAF6}
+\definecolor{naranja}{HTML}{C55A11}
+\definecolor{naranjaclaro}{HTML}{FBE5D6}
+\definecolor{grisclaro}{HTML}{F2F2F2}
+
+\title[NTS 246]{Consulta de la normativa de vacunación del Perú con RAG}
+\author[Grupo 6]{%
+  \begin{tabular}{c}
+    Juan Chipana \quad Ximena Quispe \quad Sean Leiva \\[3pt]
+    Marcela Ventura \quad Dylan Lucar \quad Alejandro Ramirez
+  \end{tabular}}
+\date{Noviembre 2026}
+
+\tikzset{
+  caja/.style={
+    draw=azul, fill=azulclaro, rounded corners=2pt,
+    text width=1.85cm, minimum height=1.0cm, align=center,
+    font=\scriptsize, inner sep=3pt
+  },
+  cajaN/.style={
+    draw=naranja, fill=naranjaclaro, rounded corners=2pt,
+    text width=1.85cm, minimum height=1.0cm, align=center,
+    font=\scriptsize, inner sep=3pt
+  },
+  arch/.style={
+    draw=azul, fill=grisclaro, rounded corners=2pt,
+    text width=1.85cm, minimum height=1.0cm, align=center,
+    font=\scriptsize, inner sep=3pt
+  },
+  flecha/.style={->, thick, azul},
+  flechaN/.style={->, thick, naranja}
+}
+
+\begin{document}
+
+% ---------------------------------------------------------------- Portada
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% ---------------------------------------------------------------- Objetivo
+\begin{frame}{Objetivo}
+  \begin{block}{Objetivo general}
+    Construir un sistema de \textbf{RAG (Retrieval-Augmented Generation)} que permita
+    consultar en lenguaje natural la \textbf{NTS N° 246-MINSA/DGIESP-2026},
+    \emph{Norma Técnica de Salud que establece el Esquema Nacional de Inmunizaciones}.
+  \end{block}
+
+  \vspace{2mm}
+  \begin{itemize}
+    \item Responder \textbf{únicamente} con base en los PDF oficiales de \texttt{pdf/}.
+    \item Devolver la \textbf{página y sección} que sustentan cada respuesta.
+    \item Ofrecer una consulta \textbf{rápida y trazable} frente a la búsqueda manual.
+    \item Ser una herramienta de consulta, \textbf{no} un asistente médico ni un reemplazo
+          de la lectura de la norma.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------- Problema
+\begin{frame}{El problema}
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \begin{itemize}
+        \item Norma de \textbf{140 páginas escaneadas} (97 + 43), con numeración
+              impresa continua.
+        \item Organizada en secciones, fichas técnicas de vacunas y tablas.
+        \item Buscar una edad, dosis, intervalo, temperatura de conservación o
+              contraindicación exige revisar muchas páginas.
+        \item Los PDF \textbf{no tienen capa de texto}: hay que aplicar OCR antes
+              de poder buscar.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.44\textwidth}
+      \begin{block}{La prioridad}
+        La \textbf{calidad de la ingesta}. Si el OCR o las tablas están mal
+        extraídos, el mejor modelo de lenguaje responderá mal.
+      \end{block}
+      \vspace{1mm}
+      \begin{block}{Alcance}
+        Solo esta norma. Fuera de alcance: diagnóstico, recomendaciones clínicas,
+        otras normas, datos de pacientes, interfaz web y \emph{fine-tuning}.
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------- Arquitectura general
+\begin{frame}{Arquitectura general}
+  \centering
+  \begin{tikzpicture}[>=Stealth]
+    % Banda offline
+    \fill[grisclaro, rounded corners=6pt] (-0.25,-0.75) rectangle (14.0,0.9);
+    \node[anchor=west, font=\scriptsize\bfseries, text=azul] at (-0.1,0.7)
+      {ETAPA OFFLINE (una vez)};
+
+    \node[caja] (pdf)  at (1.35,0)   {\texttt{pdf/}\\PDF escaneados};
+    \node[caja] (ocr)  at (4.55,0)   {OCR\\+ Docling};
+    \node[caja] (proc) at (7.75,0)   {Limpieza\\+ chunks};
+    \node[caja] (idx)  at (10.95,0)  {Embeddings\\+ ChromaDB};
+    \node[font=\scriptsize, anchor=west, align=left] at (12.6,0) {\texttt{data/}\\\texttt{index/}};
+
+    \draw[flecha] (pdf) -- (ocr);
+    \draw[flecha] (ocr) -- (proc);
+    \draw[flecha] (proc) -- (idx);
+
+    % Banda online
+    \fill[grisclaro, rounded corners=6pt] (-0.25,-3.35) rectangle (14.0,-1.75);
+    \node[anchor=west, font=\scriptsize\bfseries, text=naranja] at (-0.1,-1.95)
+      {ETAPA ONLINE (por consulta)};
+
+    \node[cajaN] (q)    at (1.35,-2.6)  {Pregunta};
+    \node[cajaN] (rec)  at (4.55,-2.6)  {Búsqueda\\híbrida};
+    \node[cajaN] (fus)  at (7.75,-2.6)  {Fusión RRF\\top 6--8};
+    \node[cajaN] (gen)  at (10.95,-2.6) {LLM\\o extractivo};
+    \node[font=\scriptsize, anchor=west, text width=1.3cm, align=left] at (12.6,-2.6)
+      {Respuesta\\+ fuentes};
+
+    \draw[flechaN] (q) -- (rec);
+    \draw[flechaN] (rec) -- (fus);
+    \draw[flechaN] (fus) -- (gen);
+    \draw[flechaN] (gen) -- ++(0.75,0);
+  \end{tikzpicture}
+
+  \vspace{2mm}
+  \footnotesize
+  Ingesta local determinista, una sola vez \textbullet{} Consulta en local o en un
+  contenedor ligero \textbullet{} Cada fragmento conserva documento, página y sección.
+\end{frame}
+
+% ---------------------------------------------------------------- Ingesta
+\begin{frame}{Arquitectura: ingesta offline}
+  \centering
+  \begin{tikzpicture}[>=Stealth]
+    \node[arch] (pdf) at (0,0)      {\texttt{pdf/*.pdf}\\2 partes};
+    \node[caja] (ocr) at (2.60,0)   {\textbf{1} OCR\\OCRmyPDF\\+ Tesseract};
+    \node[caja] (doc) at (5.20,0)   {\textbf{2} Docling\\secciones\\y tablas};
+    \node[caja] (lim) at (7.80,0)   {\textbf{3} Limpieza\\normalización\\de unidades};
+    \node[caja] (chk) at (10.40,0)  {\textbf{4} Chunks\\con metadatos};
+    \node[caja] (ix)  at (13.00,0)  {\textbf{5} Índice\\Embeddings +\\ChromaDB};
+
+    \draw[flecha] (pdf) -- (ocr);
+    \draw[flecha] (ocr) -- (doc);
+    \draw[flecha] (doc) -- (lim);
+    \draw[flecha] (lim) -- (chk);
+    \draw[flecha] (chk) -- (ix);
+  \end{tikzpicture}
+
+  \vspace{4mm}
+  \begin{itemize}
+    \item \textbf{OCR:} \texttt{tessdata\_best}, español, 300 ppp, motor LSTM; endereza
+          páginas giradas y omite formularios en blanco.
+    \item \textbf{Extracción:} Docling reconstruye layout, secciones y tablas a
+          Markdown/JSON.
+    \item \textbf{Trazabilidad:} cada chunk guarda documento, página, sección, vacuna y tipo.
+    \item \textbf{Fuente de verdad:} \texttt{data/chunks.jsonl} permite reconstruir el índice
+          sin repetir el OCR.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------- Consulta
+\begin{frame}{Arquitectura: consulta online}
+  \centering
+  \begin{tikzpicture}[>=Stealth]
+    \node[cajaN] (q)    at (0,0)      {Pregunta};
+    \node[caja]  (emb)  at (2.60,0)   {Embedding\\384 dim};
+    \node[cajaN] (vec)  at (5.20,1.0) {ChromaDB\\vectorial top-10};
+    \node[cajaN] (bm)   at (5.20,-1.0){BM25\\léxica top-10};
+    \node[caja]  (rrf)  at (7.80,0)   {Fusión RRF\\top 6--8};
+    \node[caja]  (gen)  at (10.40,0)  {LLM opcional\\o extractivo};
+    \node[caja]  (res)  at (13.00,0)  {Respuesta\\+ fuentes};
+
+    \draw[flechaN] (q) -- (emb);
+    \draw[flecha] (emb) -- (vec);
+    \draw[flecha] (emb) -- (bm);
+    \draw[flecha] (vec) -- (rrf);
+    \draw[flecha] (bm) -- (rrf);
+    \draw[flecha] (rrf) -- (gen);
+    \draw[flecha] (gen) -- (res);
+  \end{tikzpicture}
+
+  \vspace{3mm}
+  \begin{itemize}
+    \item \textbf{Recuperación híbrida:} vectores (semántica) + BM25 (términos exactos),
+          combinados con \emph{Reciprocal Rank Fusion}.
+    \item \textbf{Generación:} LLM con contexto citado mediante API compatible con OpenAI
+          (Ollama, OpenAI, etc.).
+    \item \textbf{Modo extractivo:} sin LLM configurado, devuelve los fragmentos más
+          relevantes con su cita.
+    \item \textbf{Abstención:} si la respuesta no está en la norma, lo indica en lugar de
+          inventarla.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------- Stack
+\begin{frame}{Stack tecnológico}
+  \small
+  \begin{columns}[T]
+    \begin{column}{0.50\textwidth}
+      \begin{itemize}
+        \item Python 3.12 y \texttt{uv}
+        \item FastAPI + Uvicorn
+        \item ChromaDB 1.5 + BM25 en memoria
+        \item FastEmbed + ONNX Runtime
+              (\texttt{paraphrase-\allowbreak multilingual-\allowbreak MiniLM-L12-v2}, 384 dim.)
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{itemize}
+        \item OCRmyPDF + Tesseract (español)
+        \item Docling (layout y tablas)
+        \item Docker Compose (imagen de consulta ligera, $\approx$850 MB)
+        \item LLM opcional vía API compatible con OpenAI
+      \end{itemize}
+    \end{column}
+  \end{columns}
+
+  \vspace{2mm}
+  \begin{block}{Endpoints}
+    \centering
+    \setlength{\tabcolsep}{4pt}
+    \begin{tabular}{@{}lll@{}}
+      \toprule
+      Método & Ruta & Función \\
+      \midrule
+      GET  & \texttt{/salud}    & Estado e índice \\
+      POST & \texttt{/consulta} & Pregunta $\rightarrow$ respuesta + fuentes \\
+      POST & \texttt{/buscar}   & Solo recuperación, sin LLM \\
+      \bottomrule
+    \end{tabular}
+  \end{block}
+\end{frame}
+
+% ---------------------------------------------------------------- Estado y ejemplos
+\begin{frame}{Resultados y ejemplos de consultas}
+  \small
+  \textbf{Estado:} 140 páginas procesadas \textperiodcentered{} \textbf{790 chunks} indexados
+  (17 por revisar) \textperiodcentered{} \textbf{11/11} preguntas de evaluación con la fuente
+  esperada en el top 5 \textperiodcentered{} API probada en local y Docker.
+
+  \vspace{2mm}
+  \begin{itemize}
+    \item \textbf{¿Cuál es el esquema de vacunación de la Tdap en gestantes?}\hfill
+          {\scriptsize\color{azul}(p. 34, 6.1.1.17)}\\
+          Una dosis de Tdap entre las 20 y 36 semanas de gestación, en cada gestación.
+    \item \textbf{¿Cuánto tarda en aparecer la anafilaxia asociada a la DPT?}\hfill
+          {\scriptsize\color{azul}(p. 98, Anexo 8)}\\
+          De 0 a 1 hora.
+    \item \textbf{¿Cuál es la finalidad de la norma?}\hfill
+          {\scriptsize\color{azul}(p. 1, FINALIDAD)}\\
+          Contribuir a disminuir la morbimortalidad causada por enfermedades inmunoprevenibles.
+  \end{itemize}
+
+  \vspace{1mm}
+  {\footnotesize\textbf{Abstención:} «¿Cuál es el precio de la vacuna contra el VPH?»\\
+   $\rightarrow$ No se encontró esa información en la normativa cargada.}
+\end{frame}
+
+
+\end{document}
+
+%%% Local Variables:
+%%% mode: LaTeX
+%%% TeX-master: t
+%%% End:
