@@ -168,7 +168,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     pdfs = sorted(settings.pdf_dir.glob("*.pdf"))
 
     print("\nConsulta (API):")
-    check("Índice ChromaDB en data/index/chroma", chroma_ready, "make ingest, o copia data/index/")
+    check(
+        "Índice ChromaDB en data/index/chroma",
+        chroma_ready,
+        "make index-restore (o make ingest)",
+    )
     check("Modelo de embeddings", cache_ready, "se descarga en la primera ingesta")
     check(
         "Dependencias de consulta",

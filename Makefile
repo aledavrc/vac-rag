@@ -7,7 +7,7 @@ endif
 
 PY ?= $(VENV_PY)
 
-.PHONY: install setup-ocr ingest serve test lint doctor docker-build docker-up docker-down clean-data
+.PHONY: install setup-ocr ingest serve test lint doctor docker-build docker-up docker-down clean-data index-restore
 
 install:
 	uv venv --python 3.12 .venv
@@ -43,4 +43,9 @@ docker-down:
 	docker compose down
 
 clean-data:
-	$(PY) -c "import shutil; from pathlib import Path; [shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True) for p in map(Path, ['data/derived', 'data/ocr', 'data/processed', 'data/index', 'data/chunks.jsonl', 'data/manifest.json'])]"
+	$(PY) -c "import shutil; from pathlib import Path; [shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True) for p in map(Path, ['data/derived', 'data/ocr', 'data/processed', 'data/chunks.jsonl', 'data/manifest.json'])]"
+
+# ChromaDB reescribe archivos de bloqueo al consultar. Restaura el índice
+# versionado antes de commitear para evitar ruido en el diff.
+index-restore:
+	git checkout -- data/index

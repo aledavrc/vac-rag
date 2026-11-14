@@ -9,10 +9,13 @@ __pycache__/
 data/derived/
 data/ocr/
 data/processed/
-data/index/
 data/*.json
 data/*.jsonl
 data/incidencias.md
+
+# ChromaDB: el índice sí se versiona, pero WAL/SHM son transitorios.
+data/index/chroma/*.sqlite3-wal
+data/index/chroma/*.sqlite3-shm
 
 # Modelos descargados
 models/tessdata/

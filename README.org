@@ -99,16 +99,19 @@ sección [[#comandos-utiles][Comandos útiles]].
 | =data/overrides/= | sí | <10 KB | correcciones manuales de páginas concretas |
 | =eval/= | sí | ~70 KB | gold set de evaluación |
 | =data/chunks.jsonl= | no | ~0,5 MB | se genera con =make ingest= |
-| =data/index/chroma/= | no | ~6 MB | se genera; necesario para consultar |
+| =data/index/chroma/= | sí | ~6 MB | índice listo para consultar |
 | =data/ocr/=, =data/derived/= | no | ~76 MB | intermedios del OCR |
 | =models/fastembed/= | no | ~240 MB | se descarga en la primera ingesta |
 | =models/tessdata/= | no | ~24 MB | opcional (=make setup-ocr=) |
 | =.env= | no | — | copiar desde =.env.example= |
 
-El repositorio pesa ~24 MB porque solo se versiona el código, el corpus y la evaluación. Los
-artefactos pesados (modelos, OCR intermedio e índice) se regeneran localmente con =make ingest=.
-En una máquina donde solo se quiere *consultar* se puede copiar =data/index/= y
-=models/fastembed/= desde la máquina que ya ingirió, sin necesidad de Docling.
+El repositorio pesa ~30 MB porque solo se versiona el código, el corpus, la evaluación y el índice
+de consulta. Los artefactos pesados (modelos y OCR intermedio) se regeneran localmente con
+=make ingest=. El índice versionado usa el modelo de embeddings fijado en =pyproject.toml=, así que
+un clon nuevo puede consultar sin ejecutar la ingesta (solo descarga el modelo la primera vez).
+
+ChromaDB abre el índice en modo lectura-escritura y reescribe archivos de bloqueo al consultar; si
+=git status= muestra cambios en =data/index/=, ejecuta =make index-restore= antes de commitear.
 
 * Instalación local
 
@@ -172,8 +175,9 @@ ni =chunks.jsonl=, ni los modelos de OCR: reconstruye el índice léxico desde C
 El build descarga el modelo de embeddings (~220 MB) y lo deja dentro de la imagen.
 
 Si =data/index/chroma= está vacío, el contenedor arranca igual pero =/salud= responde
-=estado: degradado= y las consultas devuelven 503. En una máquina nueva hay que ejecutar
-=make ingest= antes (o copiar =data/index/= desde la máquina donde ya se ingirió).
+=estado: degradado= y las consultas devuelven 503. El índice se versiona, así que en un clon nuevo
+basta con =docker compose up --build -d=; si se borró, recupéralo con =make index-restore= o
+regenéralo con =make ingest=.
 
 Para usar un LLM local en el host (Ollama):
 
@@ -265,7 +269,8 @@ make ingest        # pipeline completa
 make serve         # API con recarga
 make test          # pruebas
 make lint          # ruff
-make clean-data    # borra derivados, chunks e índice (conserva PDF y overrides)
+make clean-data    # borra derivados y chunks (el índice se reinicia al ingestar)
+make index-restore # restaura data/index tras consultar
 make docker-build
 make docker-up
 #+end_src
