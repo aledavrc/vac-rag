@@ -1,5 +1,5 @@
 {"pregunta": "¿Cuál es la finalidad de la NTS 246?", "pagina": 1, "seccion": "FINALIDAD", "clave": "morbimortalidad"}
-{"pregunta": "¿Cuál es el objetivo general de la norma?", "pagina": 1, "seccion": "OBJETIVO", "clave": "esquema nacional"}
+{"pregunta": "¿Cuál es el objetivo general de la norma?", "pagina": 1, "seccion": "2.1 Objetivo General", "clave": "esquema nacional"}
 {"pregunta": "¿Cuál es la composición de la vacuna antipoliomielítica oral?", "pagina": 22, "seccion": "6.1.1.8", "clave": "poliovirus"}
 {"pregunta": "¿Qué hacer si un niño regurgita la vacuna antipoliomielítica oral?", "pagina": 22, "seccion": "6.1.1.8", "clave": "dosis de reemplazo"}
 {"pregunta": "¿Cuál es el esquema de vacunación de la Tdap en gestantes?", "pagina": 34, "seccion": "6.1.1.17", "clave": "20 a 36 semanas"}
@@ -7,7 +7,19 @@
 {"pregunta": "¿Qué tasa de linfadenitis supurativa se asocia a la vacuna BCG?", "pagina": 98, "seccion": "ANEXO 8", "clave": "100 a 1000"}
 {"pregunta": "¿Cuánto tarda en aparecer la anafilaxia asociada a la DPT?", "pagina": 98, "seccion": "ANEXO 8", "clave": "0 a 1 hora"}
 {"pregunta": "¿Qué consecuencia tiene una inyección no estéril?", "pagina": 100, "seccion": "ANEXO 9", "clave": "infección"}
+{"pregunta": "¿Cuál es la dosis de la vacuna contra el rotavirus?", "pagina": 23, "seccion": "6.1.1.9", "clave": "1,5 ml"}
+{"pregunta": "¿Cuál es la dosis de la vacuna Tdap?", "pagina": 34, "seccion": "6.1.1.17", "clave": "0,5 ml"}
+{"pregunta": "¿A qué temperatura se conserva la vacuna contra la fiebre amarilla y cuánto dura una vez reconstituida?", "pagina": 30, "seccion": "6.1.1.14", "clave": "+2 °C a +8 °C y 6 horas"}
+{"pregunta": "¿Cuál es la vía y el sitio de administración de la vacuna contra la hepatitis B en adultos?", "pagina": 16, "seccion": "6.1.1.2", "clave": "intramuscular deltoides"}
+{"pregunta": "¿Cuál es la composición de la vacuna combinada pentavalente?", "pagina": 18, "seccion": "6.1.1.4", "clave": "toxoide diftérico"}
+{"pregunta": "¿Qué vacunas se aplican durante el embarazo según el esquema prenatal?", "pagina": 45, "seccion": "6.2.1", "clave": "Tdap VRS influenza hepatitis B"}
+{"pregunta": "¿Qué vacuna recibe el recién nacido con VIH asintomático?", "pagina": 48, "seccion": "6.3.1", "clave": "BCG bajo evaluación médica"}
+{"pregunta": "¿Qué vacunas debe recibir el personal de salud?", "pagina": 53, "seccion": "6.3.4", "clave": "HVB influenza"}
+{"pregunta": "¿Existe contraindicación para administrar varias vacunas simultáneamente?", "pagina": 79, "seccion": "ANEXO 1", "clave": "no existe contraindicación"}
+{"pregunta": "¿Cuánto tiempo dura un frasco multidosis abierto según la política de frascos abiertos?", "pagina": 82, "seccion": "ANEXO 3", "clave": "28 días"}
+{"pregunta": "¿Es necesario reiniciar el esquema de vacunación si se interrumpe?", "pagina": 80, "seccion": "ANEXO 2", "clave": "no reiniciar"}
 {"pregunta": "¿Cuál es el precio de la vacuna contra el VPH?", "pagina": null, "seccion": null, "clave": null}
 {"pregunta": "¿Qué dice la norma sobre la vacuna contra el ébola?", "pagina": null, "seccion": null, "clave": null}
-{"pregunta": "¿Cuál es la dosis de la vacuna contra el rotavirus?", "pagina": 23, "seccion": "6.1.1.9", "clave": "1,5 ml"}
-{"pregunta": "¿Cuál es la dosis de la vacuna Tdap?", "pagina": 34, "seccion": "6.1.1.17", "clave": "dosis"}
+{"pregunta": "¿Cuál es el tratamiento recomendado para la diabetes tipo 2?", "pagina": null, "seccion": null, "clave": null}
+{"pregunta": "¿Qué vacunas incluye el calendario de vacunación de Chile?", "pagina": null, "seccion": null, "clave": null}
+{"pregunta": "¿Cuánto paracetamol se le da a un niño de 5 años?", "pagina": null, "seccion": null, "clave": null}
