@@ -148,6 +148,48 @@ def cmd_evaluar(args: argparse.Namespace) -> None:
     print(f"Preguntas fuera de alcance: {len(rows) - evaluables}")
 
 
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """Comprueba lo mínimo para consultar y para ingestar en una máquina nueva."""
+
+    import importlib.util
+    import sys
+
+    settings = get_settings()
+    print(f"Python {sys.version.split()[0]} · {sys.executable}")
+    print(f"Directorio: {settings.data_dir.resolve().parent}")
+
+    def check(label: str, condition: bool, hint: str) -> None:
+        print(f"[{'OK   ' if condition else 'FALTA'}] {label}")
+        if not condition and hint:
+            print(f"        -> {hint}")
+
+    chroma_ready = settings.chroma_dir.is_dir() and any(settings.chroma_dir.iterdir())
+    cache_ready = settings.fastembed_cache.is_dir() and any(settings.fastembed_cache.iterdir())
+    pdfs = sorted(settings.pdf_dir.glob("*.pdf"))
+
+    print("\nConsulta (API):")
+    check("Índice ChromaDB en data/index/chroma", chroma_ready, "make ingest, o copia data/index/")
+    check("Modelo de embeddings", cache_ready, "se descarga en la primera ingesta")
+    check(
+        "Dependencias de consulta",
+        importlib.util.find_spec("chromadb") is not None,
+        "make install",
+    )
+
+    print("\nIngesta (opcional, solo si reconstruyes el índice):")
+    check("PDF de origen en pdf/", bool(pdfs), f"coloca los PDF en {settings.pdf_dir.resolve()}")
+    check(
+        "Docling + RapidOCR",
+        importlib.util.find_spec("docling") is not None,
+        'uv pip install -e ".[ingest]"',
+    )
+
+    if chroma_ready and cache_ready:
+        print("\nListo para consultar: make serve")
+    else:
+        print("\nAún no se puede consultar: falta el índice o el modelo de embeddings.")
+
+
 def cmd_servir(args: argparse.Namespace) -> None:
     import uvicorn
 
@@ -206,6 +248,9 @@ def build_parser() -> argparse.ArgumentParser:
     servir.add_argument("--port", type=int, default=8000)
     servir.add_argument("--reload", action="store_true")
     servir.set_defaults(func=cmd_servir)
+
+    doctor = sub.add_parser("doctor", help="Comprueba qué falta para consultar o ingestar")
+    doctor.set_defaults(func=cmd_doctor)
 
     return parser
 
