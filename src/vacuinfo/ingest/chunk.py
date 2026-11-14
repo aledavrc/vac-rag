@@ -17,6 +17,7 @@ from vacuinfo.ingest.clean import (
     normalize_for_match,
     parse_table,
 )
+from vacuinfo.ingest.merge import is_table_note, merge_pages
 from vacuinfo.ingest.normalize import normalize_clinical_text
 
 VACCINE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -76,7 +77,7 @@ _OCR_FIELD_FIXES = {
 }
 
 # Número de sección colado en la clave (ej. "6.1.1.6. VACUNA CONTRA …").
-_SECTION_PREFIX = re.compile(r"^\d+(?:\.\d+)+\s*\.?\s*")
+_SECTION_PREFIX = re.compile(r"^\d+(?:\.\d+)+\s*[.,;]?\s*")
 # Encabezado de sección sin "##" (ej. "6.1.1.10. VACUNA ANTINEUMOCÓCICA (*)").
 _SECTION_HEADING = re.compile(r"^\d+(?:\.\d+)+\s*\.\s+[A-ZÁÉÍÓÚÑ]")
 
@@ -149,6 +150,28 @@ def _split_fused_key(key: str) -> tuple[str, str] | None:
     return None
 
 
+def _split_dose_conservation(value: str) -> tuple[str, str] | None:
+    """Separa una celda fusionada "0.5 ml +2 °C a +8 °C" con evidencia clara.
+
+    Solo actúa si la primera parte tiene un volumen y la segunda una
+    temperatura; si no, el valor queda íntegro y marcado para revisión.
+    """
+
+    match = re.search(
+        r"[+-]?\s*\d{1,2}(?:[.,]\d+)?\s*(?:[°ºoO%'’\"*]|℃)\s*C?",
+        value,
+    )
+    if match is None:
+        return None
+    dose = value[: match.start()].strip(" .;,")
+    conservation = value[match.start() :].strip()
+    if not re.search(r"\d+(?:[.,]\d+)?\s*(?:ml|m1|mi)\b", dose, re.IGNORECASE):
+        return None
+    if "°C" not in conservation and "℃" not in conservation:
+        return None
+    return dose, conservation
+
+
 def detect_vaccine(text: str) -> str | None:
     normalized = f" {normalize_for_match(text)} "
     best: tuple[int, str] | None = None
@@ -170,6 +193,7 @@ def _is_heading(line: str) -> bool:
 def _clean_heading(line: str) -> str:
     heading = re.sub(r"^#{1,6}\s+", "", line.strip())
     heading = re.sub(r"\s+", " ", heading).strip(" .:;")
+    heading = re.sub(r"^(\d+(?:\.\d+)+)\s*[,;]\s*", r"\1. ", heading)
     return heading
 
 
@@ -412,6 +436,18 @@ def _table_chunks(
     if _is_ficha(rows):
         value_cols = _value_columns(rows)
 
+        def row_value(row: list[str], key: str) -> str:
+            """Valor de la fila sin repetir la propia clave de la ficha."""
+
+            normalized_key = normalize_for_match(key)
+            return _join_values(
+                [
+                    row[column]
+                    for column in value_cols
+                    if normalize_for_match(row[column]) != normalized_key
+                ]
+            )
+
         def make_chunk(key: str, value: str, row_index: int, meta: dict) -> dict:
             text = f"{section} — {key}: {value}" if section else f"{key}: {value}"
             return {
@@ -426,7 +462,7 @@ def _table_chunks(
         row_index = 0
         while row_index < len(rows):
             raw_key = rows[row_index][0]
-            value = _join_values([rows[row_index][j] for j in value_cols])
+            value = row_value(rows[row_index], raw_key)
             if not value:
                 row_index += 1
                 continue
@@ -437,9 +473,7 @@ def _table_chunks(
                 first, second = fused
                 continuation = ""
                 if row_index + 1 < len(rows) and not rows[row_index + 1][0].strip():
-                    continuation = _join_values(
-                        [rows[row_index + 1][j] for j in value_cols]
-                    )
+                    continuation = row_value(rows[row_index + 1], raw_key)
                 if continuation:
                     # Partición segura: el 1er campo toma la celda actual y el
                     # 2º la fila de continuación que le sigue.
@@ -460,6 +494,32 @@ def _table_chunks(
                         )
                     )
                     row_index += 2
+                    continue
+                # Sin continuación: probar un corte seguro dosis/temperatura.
+                split = (
+                    _split_dose_conservation(value)
+                    if first == "DOSIS (CANTIDAD)" and second.startswith("CONSERVACIÓN")
+                    else None
+                )
+                if split is not None:
+                    dose, conservation = split
+                    chunks.append(
+                        make_chunk(
+                            first,
+                            dose,
+                            row_index,
+                            metadata("ficha_campo", f"{first} {dose}"),
+                        )
+                    )
+                    chunks.append(
+                        make_chunk(
+                            second,
+                            conservation,
+                            row_index,
+                            metadata("ficha_campo", f"{second} {conservation}"),
+                        )
+                    )
+                    row_index += 1
                     continue
                 # Sin continuación: el valor no se puede repartir con seguridad;
                 # se conserva íntegro en el 2º campo y se marca para revisión.
@@ -509,6 +569,12 @@ def _table_chunks(
                 "_row": row_index,
             }
         )
+    if table_flags:
+        # La marca es de la tabla, no de cada fila: se conserva solo en la
+        # primera para no inflar `revision.md` con el mismo aviso repetido.
+        for chunk in chunks[1:]:
+            chunk["metadata"].pop("revisar", None)
+            chunk["metadata"].pop("notas", None)
     return chunks
 
 
@@ -530,6 +596,7 @@ def _chunk_page(
     narrative: list[str] = []
     chunks: list[dict] = []
     table_index = 0
+    previous_kind = ""
 
     def flush_narrative() -> None:
         nonlocal narrative
@@ -562,21 +629,35 @@ def _chunk_page(
             section = _update_section(section, str(payload))
         elif kind == "paragraph":
             paragraph = _join_paragraph(payload)  # type: ignore[arg-type]
-            if paragraph:
-                if not section:
-                    # Texto suelto antes del primer título: normalmente es
-                    # cola de una tabla o ruido de OCR.
-                    continue
-                words = paragraph.split()
-                uppercase = sum(1 for word in words if word.isupper() and len(word) > 2)
-                if (
-                    re.fullmatch(r"ANEXO\s+\d+", section, re.IGNORECASE)
-                    and len(words) <= 20
-                    and uppercase / max(len(words), 1) >= 0.5
-                ):
-                    section = f"{section} — {paragraph}"
-                else:
-                    narrative.append(paragraph)
+            if not paragraph:
+                previous_kind = kind
+                continue
+            if (
+                previous_kind in {"table", "note"}
+                and is_table_note(paragraph)
+                and chunks
+                and chunks[-1]["tipo"] in {"tabla_completa", "tabla_fila", "ficha_campo"}
+            ):
+                # La nota al pie pertenece al último chunk de la tabla: se
+                # adjunta para que no quede huérfana (ADR-002/ADR-006).
+                chunks[-1]["texto"] = f"{chunks[-1]['texto']}\n\n{paragraph}"
+                previous_kind = "note"
+                continue
+            if not section:
+                # Texto suelto antes del primer título: normalmente es
+                # cola de una tabla o ruido de OCR.
+                previous_kind = kind
+                continue
+            words = paragraph.split()
+            uppercase = sum(1 for word in words if word.isupper() and len(word) > 2)
+            if (
+                re.fullmatch(r"ANEXO\s+\d+", section, re.IGNORECASE)
+                and len(words) <= 20
+                and uppercase / max(len(words), 1) >= 0.5
+            ):
+                section = f"{section} — {paragraph}"
+            else:
+                narrative.append(paragraph)
         elif kind == "table":
             flush_narrative()
             rows = parse_table(payload)  # type: ignore[arg-type]
@@ -592,6 +673,7 @@ def _chunk_page(
                         spec=spec,
                     )
                 )
+        previous_kind = kind
 
     flush_narrative()
     return chunks, section
@@ -681,10 +763,34 @@ def _override_path(settings: Settings, spec: DocumentSpec, page: int) -> Path | 
     return None
 
 
+def _write_merge_report(settings: Settings, reports: list[dict]) -> None:
+    path = settings.processed_dir / "fusiones.md"
+    if not reports:
+        path.unlink(missing_ok=True)
+        return
+    lines = [
+        "# Fusiones entre páginas",
+        "",
+        "| Página | Hasta | Tabla | Nota | Párrafo |",
+        "|--------|-------|-------|------|---------|",
+    ]
+    for report in reports:
+        values = {key: ("sí" if value is True else "—") for key, value in report.items()}
+        values["pagina"] = report["pagina"]
+        values["pagina_fin"] = report["pagina_fin"]
+        line = (
+            f"| {values['pagina']} | {values['pagina_fin']} | {values['tabla']} | "
+            f"{values['nota']} | {values['parrafo']} |"
+        )
+        lines.append(line)
+    (settings.processed_dir / "fusiones.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def build_chunks(settings: Settings, specs: Iterable[DocumentSpec]) -> list[dict]:
     settings.ensure_dirs()
-    all_chunks: list[dict] = []
+    specs = tuple(specs)
 
+    documents: list[tuple[DocumentSpec, list[str]]] = []
     for spec in specs:
         pages_path = settings.processed_dir / f"{spec.stem}.pages.json"
         if not pages_path.exists():
@@ -692,68 +798,106 @@ def build_chunks(settings: Settings, specs: Iterable[DocumentSpec]) -> list[dict
                 f"Falta {pages_path}. Ejecuta primero la extracción con Docling."
             )
         raw = json.loads(pages_path.read_text(encoding="utf-8"))
-        raw_pages: list[str] = raw["pages"]
-        repeated = detect_repeated_edge_lines(raw_pages)
-        cleaned_pages = []
+        documents.append((spec, raw["pages"]))
+
+    # Los dos PDF son una secuencia continua: los encabezados repetidos y las
+    # fusiones de borde se calculan sobre las 140 páginas, no por documento.
+    all_raw_pages = [page for _, pages in documents for page in pages]
+    repeated = detect_repeated_edge_lines(all_raw_pages)
+
+    entries: list[dict] = []
+    for spec, raw_pages in documents:
         for pdf_page, raw_page in enumerate(raw_pages, start=1):
             printed_page = spec.page_offset + pdf_page
             override = _override_path(settings, spec, printed_page)
             if override is not None:
                 print(f"[chunks] override aplicado: {override}")
-                cleaned_pages.append(override.read_text(encoding="utf-8").strip())
+                text = re.sub(
+                    r"<!--\s*pagina:\s*\d+\s*-->\s*",
+                    "",
+                    override.read_text(encoding="utf-8"),
+                ).strip()
             else:
-                cleaned_pages.append(clean_page_markdown(raw_page, repeated))
+                text = clean_page_markdown(raw_page, repeated)
+            entries.append(
+                {
+                    "spec": spec,
+                    "pdf_page": pdf_page,
+                    "pagina": printed_page,
+                    "texto": text,
+                }
+            )
 
-        debug_parts: list[str] = []
-        section = ""
-        doc_chunks: list[dict] = []
-        for pdf_page, page_text in enumerate(cleaned_pages, start=1):
-            printed_page = spec.page_offset + pdf_page
-            debug_parts.append(f"<!-- pagina: {printed_page} -->\n\n{page_text}")
-            if printed_page in SKIP_PRINTED_PAGES:
-                # Se procesa solo para actualizar la sección vigente, pero no
-                # se generan chunks de formularios en blanco.
-                _, section = _chunk_page(
-                    page_text,
-                    spec=spec,
-                    pdf_page=pdf_page,
-                    section=section,
-                )
-                debug_parts.append("<!-- página omitida: formulario en blanco -->")
-                continue
-            chunks, section = _chunk_page(
-                page_text,
+    merged_texts, reports = merge_pages(
+        [entry["texto"] for entry in entries], skip=SKIP_PRINTED_PAGES
+    )
+    for entry, text in zip(entries, merged_texts, strict=True):
+        entry["texto"] = text
+    _write_merge_report(settings, reports)
+    if reports:
+        print(
+            "[chunks] fusiones entre páginas: "
+            f"{sum(1 for r in reports if r['tabla'])} tablas, "
+            f"{sum(1 for r in reports if r['nota'])} notas, "
+            f"{sum(1 for r in reports if r['parrafo'])} párrafos"
+        )
+
+    section = ""
+    all_chunks: list[dict] = []
+    debug_by_part: dict[int, list[tuple[int, str]]] = {spec.part: [] for spec in specs}
+    for entry in entries:
+        spec = entry["spec"]
+        pdf_page = entry["pdf_page"]
+        printed_page = entry["pagina"]
+        debug_by_part[spec.part].append((printed_page, entry["texto"]))
+        if printed_page in SKIP_PRINTED_PAGES:
+            # Se procesa solo para actualizar la sección vigente, pero no
+            # se generan chunks de formularios en blanco.
+            _, section = _chunk_page(
+                entry["texto"],
                 spec=spec,
                 pdf_page=pdf_page,
                 section=section,
             )
-            doc_chunks.extend(chunks)
+            continue
+        chunks, section = _chunk_page(
+            entry["texto"],
+            spec=spec,
+            pdf_page=pdf_page,
+            section=section,
+        )
+        all_chunks.extend(chunks)
 
-        doc_chunks = _merge_ficha_continuations(doc_chunks)
+    all_chunks = _merge_ficha_continuations(all_chunks)
 
-        for chunk in doc_chunks:
-            normalized, flags = normalize_clinical_text(chunk["texto"])
-            chunk["texto"] = normalized
-            existing = chunk["metadata"].get("notas") or ""
-            all_flags = [item.strip() for item in existing.split(";") if item.strip()]
-            all_flags.extend(flags)
-            all_flags = list(dict.fromkeys(all_flags))
-            chunk["metadata"]["revisar"] = bool(all_flags)
-            if all_flags:
-                chunk["metadata"]["notas"] = "; ".join(all_flags)
+    for chunk in all_chunks:
+        normalized, flags = normalize_clinical_text(chunk["texto"])
+        chunk["texto"] = normalized
+        existing = chunk["metadata"].get("notas") or ""
+        all_flags = [item.strip() for item in existing.split(";") if item.strip()]
+        all_flags.extend(flags)
+        all_flags = list(dict.fromkeys(all_flags))
+        chunk["metadata"]["revisar"] = bool(all_flags)
+        if all_flags:
+            chunk["metadata"]["notas"] = "; ".join(all_flags)
 
+    for spec, _pages in documents:
+        debug_parts: list[str] = []
+        for printed_page, text in debug_by_part[spec.part]:
+            debug_parts.append(f"<!-- pagina: {printed_page} -->\n\n{text}")
+            if printed_page in SKIP_PRINTED_PAGES:
+                debug_parts.append("<!-- página omitida: formulario en blanco -->")
         clean_path = settings.processed_dir / f"{spec.stem}.clean.md"
         clean_path.write_text("\n\n".join(debug_parts).strip() + "\n", encoding="utf-8")
 
-        counters: dict[tuple[str, int], int] = {}
-        for chunk in doc_chunks:
-            tipo = chunk["tipo"]
-            page = chunk["metadata"]["pagina"]
-            counters[(tipo, page)] = counters.get((tipo, page), 0) + 1
-            chunk["id"] = _make_id(
-                spec, page, tipo, counters[(tipo, page)], chunk["texto"]
-            )
-        all_chunks.extend(doc_chunks)
+    spec_by_part = {spec.part: spec for spec in specs}
+    counters: dict[tuple[str, int], int] = {}
+    for chunk in all_chunks:
+        tipo = chunk["tipo"]
+        page = chunk["metadata"]["pagina"]
+        counters[(tipo, page)] = counters.get((tipo, page), 0) + 1
+        spec = spec_by_part[chunk["metadata"]["parte"]]
+        chunk["id"] = _make_id(spec, page, tipo, counters[(tipo, page)], chunk["texto"])
 
     with settings.chunks_path.open("w", encoding="utf-8") as handle:
         for chunk in all_chunks:

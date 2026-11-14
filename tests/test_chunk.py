@@ -370,13 +370,13 @@ def test_build_chunks_pentavalente_merges_split_continuations(tmp_path):
     # Fase 5: la clave fusionada DOSIS + CONSERVACIÓN se parte y la continuación
     # se asigna al campo CONSERVACIÓN DE LA VACUNA.
     dosis = next(chunk for chunk in fichas if "DOSIS (CANTIDAD)" in chunk["texto"])
-    assert "0.5 ml." in dosis["texto"]
+    assert "0.5 ml" in dosis["texto"]
     assert "+2Ca" not in dosis["texto"]
 
     conservacion = next(
         chunk for chunk in fichas if "CONSERVACIÓN DE LA VACUNA" in chunk["texto"]
     )
-    assert "+2Ca+8 °C Frasco abierto" in conservacion["texto"]
+    assert "+2 °C a +8 °C Frasco abierto" in conservacion["texto"]
     assert not conservacion["metadata"].get("revisar")
 
     # Los campos ajenos al corte no se contaminan.
@@ -555,3 +555,112 @@ def test_build_chunks_orphan_continuation_is_kept_and_flagged(tmp_path):
     orphan = next(chunk for chunk in fichas if "Continuación" in chunk["texto"])
     assert orphan["metadata"]["revisar"] is True
     assert "continuación sin campo previo" in orphan["metadata"]["notas"]
+
+
+def test_build_chunks_merges_annex_table_across_pages(tmp_path):
+    pages = [
+        "## ANEXO 8\n\n| VACUNA | EVENTO | TASA |\n| DPT | Anafilaxia | 20 por millón |",
+        "| VACUNA | EVENTO | TASA |\n| DPT | Convulsiones | 1 por millón |",
+    ]
+    chunks = _chunks_from_pages(tmp_path, pages)
+    tablas = [chunk for chunk in chunks if chunk["tipo"] == "tabla_completa"]
+
+    assert len(tablas) == 1
+    assert "Convulsiones" in tablas[0]["texto"]
+    assert tablas[0]["metadata"]["pagina"] == 1
+    assert tablas[0]["texto"].count("| VACUNA |") == 1
+
+
+def test_build_chunks_ficha_keeps_page_attribution(tmp_path):
+    # Las fichas no se mueven de página: ADR-006 ya fusiona sus campos y la
+    # cita debe apuntar a la página donde está el valor.
+    pages = [
+        """## 6.1.1.4. VACUNA COMBINADA PENTAVALENTE
+
+| TIPO DE VACUNA | Inactivados |
+| DESCRIPCIÓN | Vacuna combinada. |
+| COMPOSICIÓN | Toxoide diftérico. |""",
+        """| PRESENTACIÓN | Frasco monodosis de 0.5 ml. |
+| DOSIS (CANTIDAD) | 0.5 ml. |""",
+    ]
+    chunks = _chunks_from_pages(tmp_path, pages)
+    fichas = [chunk for chunk in chunks if chunk["tipo"] == "ficha_campo"]
+
+    presentacion = next(chunk for chunk in fichas if "PRESENTACIÓN" in chunk["texto"])
+    assert presentacion["metadata"]["pagina"] == 2
+    assert "Frasco monodosis" in presentacion["texto"]
+
+
+def test_build_chunks_repeats_header_when_merged_table_is_split(tmp_path):
+    header = "| VACUNA | EVENTO | TASA |"
+    rows_a = [f"| DPT | Evento {i} | 1 por millón |" for i in range(7)]
+    rows_b = [f"| DPT | Evento {i} | 1 por millón |" for i in range(7, 14)]
+    pages = [
+        "## ANEXO 8\n\n" + "\n".join([header, *rows_a]),
+        "\n".join(rows_b),
+    ]
+    chunks = _chunks_from_pages(tmp_path, pages)
+    filas = [chunk for chunk in chunks if chunk["tipo"] == "tabla_fila"]
+    assert len(filas) == 14
+    assert all("VACUNA: DPT" in chunk["texto"] for chunk in filas)
+    assert all(chunk["metadata"]["pagina"] == 1 for chunk in filas)
+
+
+def test_build_chunks_attaches_table_note_across_pages(tmp_path):
+    pages = [
+        """## 6.1.1.10. VACUNA ANTINEUMOCÓCICA
+
+| TIPO DE VACUNA | Conjugada |
+| COMPOSICIÓN | Vacuna PCV 20. |""",
+        """(*) Vacuna incluida en el esquema nacional.
+
+Texto posterior de la ficha.""",
+    ]
+    chunks = _chunks_from_pages(tmp_path, pages)
+    ficha = next(chunk for chunk in chunks if "COMPOSICIÓN" in chunk["texto"])
+    assert "(*) Vacuna incluida en el esquema nacional." in ficha["texto"]
+
+
+def test_build_chunks_joins_paragraph_across_pdfs(tmp_path):
+    spec_1 = DocumentSpec(DOC_ID, DOC_TITLE, tmp_path / "parte-1.pdf", 1, 0, 1)
+    spec_2 = DocumentSpec(DOC_ID, DOC_TITLE, tmp_path / "parte-2.pdf", 2, 1, 1)
+    settings = Settings(data_dir=tmp_path, models_dir=tmp_path / "models")
+    settings.ensure_dirs()
+    pages = {
+        "parte-1": [
+            "## 6.1.1.2. VACUNA CONTRA HEPATITIS B\n\n"
+            "La vacuna se aplica por vía intramuscular en el"
+        ],
+        "parte-2": ["deltoides, según el esquema nacional."],
+    }
+    for spec in (spec_1, spec_2):
+        (settings.processed_dir / f"{spec.stem}.pages.json").write_text(
+            json.dumps({"pages": pages[spec.stem]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    chunks = build_chunks(settings, (spec_1, spec_2))
+    texto = next(chunk for chunk in chunks if chunk["tipo"] == "texto")
+    assert "en el deltoides" in texto["texto"]
+    assert texto["metadata"]["pagina"] == 1
+
+
+def test_build_chunks_splits_dose_and_conservation_from_one_cell(tmp_path):
+    page = """## 6.1.1.4. VACUNA COMBINADA PENTAVALENTE
+
+| TIPO DE VACUNA | Inactivados |
+| DOSIS (CANTIDAD) CONSERVACIÓN DE LA VACUNA | 0.5 ml. + 2℃ a +8℃ |
+| VÍA Y SITIO DE ADMINISTRACIÓN | Intramuscular. |
+"""
+    chunks = _chunks_from_page(tmp_path, page)
+    fichas = [chunk for chunk in chunks if chunk["tipo"] == "ficha_campo"]
+
+    dosis = next(chunk for chunk in fichas if "DOSIS (CANTIDAD)" in chunk["texto"])
+    conservacion = next(
+        chunk for chunk in fichas if "CONSERVACIÓN DE LA VACUNA" in chunk["texto"]
+    )
+    assert "0.5 ml" in dosis["texto"]
+    assert "2℃" not in dosis["texto"]
+    assert "+2 °C a +8 °C" in conservacion["texto"]
+    assert not dosis["metadata"].get("revisar")
+    assert not conservacion["metadata"].get("revisar")

@@ -4,6 +4,8 @@ import re
 import unicodedata
 from collections import Counter
 
+from vacuinfo.ingest.lexicon import canonicalize_terms, repair_markdown_layout
+
 _HEADER_PATTERNS = (
     re.compile(r"MINS\w*\s*/?\s*DGIESP", re.IGNORECASE),
     re.compile(r"MINSA\w*[^\n]{0,40}20\d{2}", re.IGNORECASE),
@@ -104,6 +106,8 @@ def clean_page_markdown(text: str, repeated_lines: set[str] | None = None) -> st
     repeated_lines = repeated_lines or set()
     text = normalize_text(text)
     text = _dehyphenate(text)
+    text = repair_markdown_layout(text)
+    text = canonicalize_terms(text)
 
     lines = text.splitlines()
     last_content = max((i for i, line in enumerate(lines) if line.strip()), default=-1)
