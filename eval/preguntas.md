@@ -1,8 +1,8 @@
 # Preguntas de evaluación — VacuInfo
 
-- **Corpus:** NTS N° 246-MINSA/DGIESP-2026 (140 páginas, 807 chunks).
+- **Corpus:** NTS N° 246-MINSA/DGIESP-2026 (140 páginas, 821 chunks).
 - **Índice:** `data/index/chroma` + BM25, fusión RRF.
-- **Fecha de la prueba:** 2026-11-12.
+- **Fecha de la prueba:** 2026-11-14.
 - **Conjunto:** 20 preguntas dentro de alcance + 5 fuera de alcance.
 - **Comando de recuperación:**
 
@@ -39,13 +39,13 @@
 | 8 | Anexo / tabla | ¿Cuánto tarda en aparecer la anafilaxia asociada a la DPT? | De 0 a 1 hora; tasa de 20 por 1 000 000 de dosis. | 98 | ANEXO 8 | anafilaxia, DPT, 0 a 1 hora | OK |
 | 9 | Anexo / tabla | ¿Qué consecuencia tiene una inyección no estéril? | Infección: absceso localizado en el sitio de inyección, sepsis, síndrome de choque tóxico o muerte; también infección transmitida por sangre (hepatitis o VIH). | 100 | ANEXO 9 | inyección no estéril, infección, sepsis | OK |
 | 10 | Dato exacto | ¿Cuál es la dosis de la vacuna contra el rotavirus? | 1,5 ml. | 23 | 6.1.1.9 | dosis, rotavirus, 1,5 ml | OK |
-| 11 | Dato exacto | ¿Cuál es la dosis de la vacuna Tdap? | 0,5 ml (frasco monodosis). El campo “DOSIS (CANTIDAD)” está ilegible en el OCR; la presentación de la ficha indica 0,5 ml. | 34 | 6.1.1.17 | Tdap, dosis, 0,5 ml | OK |
+| 11 | Dato exacto | ¿Cuál es la dosis de la vacuna Tdap? | 0,5 ml (frasco monodosis), según el campo “DOSIS (CANTIDAD)”. | 34 | 6.1.1.17 | Tdap, dosis, 0,5 ml | OK |
 | 12 | Dato exacto / ficha | ¿A qué temperatura se conserva la vacuna contra la fiebre amarilla y cuánto dura una vez reconstituida? | De +2 °C a +8 °C. Una vez reconstituida, debe usarse dentro de 6 horas. | 30 | 6.1.1.14 | fiebre amarilla, conservación, 6 horas | OK |
 | 13 | Dato exacto / ficha | ¿Cuál es la vía y el sitio de administración de la vacuna contra la hepatitis B en adultos? | Intramuscular, en la región deltoides (parte superior de la cara lateral externa del brazo). | 16 | 6.1.1.2 | hepatitis B, intramuscular, deltoides | OK |
 | 14 | Ficha | ¿Cuál es la composición de la vacuna combinada pentavalente? | Cada dosis de 0,5 ml contiene toxoide diftérico <25 Lf (>30 UI), toxoide tetánico ≥2,5 Lf (≥40 UI), B. pertussis de célula entera <16 UO (≥4 UI), HBsAg 10 mcg, PRP-Hib conjugado con toxoide tetánico 10 mcg, fosfato de aluminio <1,25 mg y tiomersal 0,005 %. | 18 | 6.1.1.4 | pentavalente, toxoide diftérico, HBsAg | OK |
 | 15 | Caso especial | ¿Qué vacunas se aplican durante el embarazo según el esquema prenatal? | Tdap entre 20 y 36 semanas; VRS entre 32 y 36 semanas; influenza una dosis anual en cualquier edad gestacional; hepatitis B si no hay esquema o está incompleto. | 45 | 6.2.1 | prenatal, Tdap, VRS, influenza, hepatitis B | OK |
 | 16 | Caso especial | ¿Qué vacuna recibe el recién nacido con VIH asintomático? | Una dosis de BCG. En el VIH sintomático, la vacunación se realiza bajo evaluación médica. | 48 | 6.3.1 | VIH, recién nacido, BCG | OK |
-| 17 | Caso especial | ¿Qué vacunas debe recibir el personal de salud? | HVB (3 dosis: al contacto, al mes y a los 6 meses), influenza anual, antiamarílica dosis única, neumococo dosis única, dT (3 dosis) y Tdap en zonas con brote de tos ferina; SR/SPR según riesgo epidemiológico. | 53 | 6.3.4 | personal de salud, HVB, influenza | OK |
+| 17 | Caso especial | ¿Qué vacunas debe recibir el personal de salud? | HvB (3 dosis: al contacto, al mes y a los 6 meses), influenza anual, antiamarílica dosis única, neumococo dosis única, dT (3 dosis) y Tdap en zonas con brote de tos ferina; SR/SPR según riesgo epidemiológico. | 53 | 6.3.4 | personal de salud, HvB, influenza | OK |
 | 18 | Anexo | ¿Existe contraindicación para administrar varias vacunas simultáneamente? | No. No existe contraindicación para la administración simultánea de múltiples vacunas rutinariamente recomendadas; no altera la producción de anticuerpos ni aumenta las reacciones post-vacunales. | 79 | ANEXO 1 | administración simultánea, contraindicación | OK |
 | 19 | Anexo | ¿Cuánto tiempo dura un frasco multidosis abierto según la política de frascos abiertos? | Los frascos líquidos multidosis (APO, DPT, dT pediátrica, dT adulto, influenza pediátrica) duran 28 días, rotulados con fecha y hora de apertura. Los liofilizados reconstituidos (BCG, SPR, SR, antiamarílica) se usan hasta 6 horas. En trabajo extramural se descartan al terminar la jornada. | 82 | ANEXO 3 | frasco multidosis, 28 días, 6 horas | OK |
 | 20 | Anexo | ¿Es necesario reiniciar el esquema de vacunación si se interrumpe? | No. Se continúa con las dosis faltantes sin considerar el tiempo transcurrido; no es necesario reiniciar el esquema en ninguna circunstancia. | 80 | ANEXO 2 | interrupción, dosis de rescate, no reiniciar | OK |
@@ -64,8 +64,8 @@
 
 - Las 20 preguntas dentro de alcance recuperan la página y sección esperadas en el top 5.
 - Las respuestas extractivas incluyen `*Fuente: [NTS N° 246-MINSA/DGIESP-2026, p. …, sección …]*`.
-- La pregunta 11 depende de un campo OCR ilegible; se validó con la presentación de la ficha
-  (0,5 ml) y sigue marcada como punto de revisión, igual que en `data/processed/revision.md`.
+- La pregunta 11 se responde directamente del campo `DOSIS (CANTIDAD)` de la ficha; el OCR
+  interno de Docling ya lo recupera como `0.5 ml`.
 - Las preguntas 23–25 no se abstienen en modo extractivo porque la comprobación de alcance solo
   busca coincidencia de términos. Es el principal punto a mejorar si se quiere garantizar la
   abstención sin LLM.
