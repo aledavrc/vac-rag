@@ -26,7 +26,8 @@ La versión inicial ya está implementada y ejecutada sobre el corpus:
 - OCR de las 140 páginas con Tesseract español (`tessdata_best`, 300 ppp).
 - Extracción con Docling y corrección de orientación de las páginas giradas.
 - Normalización contextual de unidades y banderas de valores dudosos.
-- 790 chunks indexados; 17 marcados para revisión.
+- 807 chunks indexados; 15 marcados para revisión.
+- Fichas key-value: 277/296 claves canónicas (93,6 %) y 0 continuaciones huérfanas (ADR-006).
 - Respuestas y fragmentos en Markdown, con listas y tablas.
 - Búsqueda híbrida con refuerzo léxico y de vacuna.
 - API FastAPI con modo extractivo, citas y abstención.
@@ -601,8 +602,9 @@ docker compose up --build -d
 
 * 13. Evaluación
 
-Se construirá un conjunto pequeño pero representativo de 20–30 preguntas. La versión inicial ya
-incluye 9 preguntas evaluables y 2 fuera de alcance; el resto se irá agregando con las pruebas.
+Se construirá un conjunto pequeño pero representativo de 20–30 preguntas. La versión actual
+incluye 20 preguntas evaluables y 5 fuera de alcance, documentadas en `eval/preguntas.md` y
+ejecutables con `eval/preguntas.jsonl`.
 
 - 8 de datos exactos (edad, dosis, intervalo, vía, conservación).
 - 5 de fichas de vacuna.
@@ -813,6 +815,114 @@ separadora; las listas inline `+`/`*` se convierten en viñetas. El cliente rend
 *Consecuencias:* el API no devuelve HTML renderizado; el cliente debe renderizar Markdown.
 
 *Revisar si:* el cliente necesita HTML directamente o una interfaz web.
+
+*** ADR-006 — Fusión conservadora de fichas key-value multipágina
+
+*Contexto:* ADR-002 revirtió la extracción centrada en tablas porque la detección automática de
+encabezados fallaba y asociaba tablas a secciones incorrectas. Aun así, el corpus conservaba el
+problema de fondo: fichas de vacuna partidas entre páginas, claves OCR rotas, continuaciones
+huérfanas y fichas de 3 columnas que caían en `tabla_completa`. El baseline de la Fase 1
+(`data/processed/baseline_fichas.txt`) lo cuantificó: 225/296 claves canónicas (76,0 %), 29 claves
+no canónicas, 14 chunks con clave "Continuación" y 4 fichas al 0 %. Había que decidir si se
+reintentaba la fusión o se mantenía la extracción por página con overrides manuales.
+
+*Opciones consideradas:*
+
+- *A. No cambiar:* mantener la extracción por página y corregir cada ficha con overrides. Coste
+  bajo de desarrollo, pero deja 71 claves sin cubrir y obliga a corregir a mano cada nueva
+  ejecución del corpus.
+- *B. Reintentar la fusión table-centric de ADR-002 tal cual:* fusionar tablas como objetos antes
+  del chunking, confiando en bounding boxes e identidad de tabla. Es exactamente el enfoque que ya
+  falló y se revirtió.
+- *C. Fusión conservadora a nivel de campo, después del chunking*, junto con canonización de claves
+  (rapidfuzz), correcciones OCR explícitas y detección de fichas de 2/3 columnas. La fusión solo
+  actúa sobre continuaciones dentro de la misma sección.
+- *D. Reconstrucción manual o con VLM de todas las fichas:* máxima calidad potencial, pero coste
+  alto, no determinista y contrario a ADR-004 (veracidad antes que cobertura).
+
+*Criterios:* veracidad (no inventar ni completar valores clínicos, ADR-004), trazabilidad
+(documento, página, sección y campo), reproducibilidad (gold set y script fijos), cobertura de
+claves canónicas, riesgo de fusión indebida y esfuerzo/mantenibilidad.
+
+*Evidencia:* se congeló un gold set de 23 fichas y 296 claves (`eval/fichas_gold.jsonl`) y se midió
+antes y después con el mismo script y el mismo conjunto de preguntas:
+
+#+begin_src bash
+.venv/bin/python -m vacuinfo.cli ingestar --sin-ocr --sin-extraccion
+.venv/bin/python scripts/medir_fichas.py
+.venv/bin/python -m vacuinfo.cli evaluar --archivo eval/preguntas.jsonl -k 5
+.venv/bin/python -m pytest -q          # 44 passed
+#+end_src
+
+| Métrica                                  | Baseline (Fase 1) | Final (Fase 7) | Δ        |
+|------------------------------------------+-------------------+----------------+----------|
+| Chunks totales                           | 790               | 807            | +17      |
+| · `texto` / `tabla_fila`                 | 197 / 267         | 196 / 267      | -1 / 0   |
+| · `tabla_completa`                       | 39                | 32             | -7       |
+| · `ficha_campo`                          | 287               | 312            | +25      |
+| Claves canónicas presentes               | 225/296 (76,0 %)  | 277/296 (93,6 %)| +17,6 pp |
+| Fichas con todas sus claves              | 10/23             | 18/23          | +8       |
+| Chunks `ficha_campo` con clave no canónica| 29 (10,1 %)      | 4 (1,3 %)      | -25      |
+| Chunks con clave "Continuación"          | 14                | 0              | -14      |
+| Fichas al 0 %                            | 4                 | 1              | -3       |
+| Hit@5 (`eval/preguntas.jsonl`)           | 11/11 = 1,00      | 11/11 = 1,00   | =        |
+| Chunks con `revisar=true`                | 17                | 15             | -2       |
+
+Resultado completo en `data/processed/eval_final.txt`. Ocho fichas pasan a 100 % (Hepatitis B,
+hexavalente, pentavalente, IPV, APO, hepatitis A, influenza y anticuerpo monoclonal) y dos mejoran
+sin llegar al 100 % (antineumocócica 0→12/13, fiebre amarilla 10→12/13). El Hit@5 no empeora.
+
+Brechas remanentes, declaradas para no sobreestimar la decisión:
+
+- 6.1.1.6 (Hib) sigue en 0/13: sus chunks son canónicos, pero la ficha de la p. 20 se atribuye a la
+  sección 6.1.1.5 porque el encabezado sin `##` aún no se detecta. Es el mismo fallo del baseline,
+  no una regresión de esta decisión.
+- 4 claves OCR sin resolver: `VÍA NTE y Dr _-` (p. 25) y `A STR ÓN DE -_`, `CO CUBACIÓN`,
+  `ÓN Ag NEO VACUNAS` (p. 43). Quedan marcadas `revisar=true`.
+- 2 claves `USO SIMULTÁNEO CON OTRAS VACUNAS` ausentes en SPR (6.1.1.11) y fiebre amarilla
+  (6.1.1.14).
+
+*Decisión:* se adopta la opción C. Se mantiene la extracción por página y se añade una fusión
+conservadora a nivel de campo después del chunking: una fila de ficha con clave vacía
+("Continuación") se concatena al último campo de la misma sección; `TIPO DE VACUNA` reinicia la
+ficha; una tabla que no es ficha cierra el contexto; los chunks `texto` son transparentes; y una
+continuación sin campo previo se conserva marcada `revisar=true` en vez de inferir su clave. No se
+reintroduce la fusión de tablas como objetos ni se depende de bounding boxes.
+
+*Por qué esta vez no es el caso revertido de ADR-002:* ADR-002 fusionaba tablas antes del chunking
+y dependía de identificar la tabla y su encabezado; al fallar la detección de encabezados, asociaba
+fichas a secciones equivocadas y el coste de corrección superaba el beneficio. ADR-006 cambia el
+nivel de intervención: no reconstruye tablas, solo concatena campos huérfanos ya chunkificados y
+solo dentro de la misma sección, con reinicios explícitos y con las ambigüedades marcadas. Además,
+la condición de revisión que dejó ADR-002 ("validar la detección de encabezados y la fusión
+multipágina contra un gold set, con una mejora clara y medible") ahora se cumple para la fusión:
+hay gold set, métricas antes/después y +17,6 pp sin pérdida de Hit@5. La parte de detección de
+encabezados se cumple para 6.1.1.10 (0→12/13) pero no todavía para 6.1.1.6, que queda como deuda
+explícita y no como un éxito encubierto. ADR-002 no se borra: sigue siendo el registro de por qué
+no se fusionan tablas como objetos.
+
+*Consecuencias:*
+
+- Ventajas: +52 claves canónicas, 0 continuaciones huérfanas, 18/23 fichas completas, todo
+  determinista y auditable, sin LLM y sin cambios en la recuperación (Hit@5 = 1,00).
+- Costes: 15 chunks requieren revisión humana; 4 claves OCR siguen sin canonicalizar; una ficha
+  completa (6.1.1.6) sigue mal atribuida de sección; los valores concatenados alargan algunos
+  chunks de ficha, aunque siguen dentro del límite de ~600 tokens.
+- Deuda: corregir la detección del encabezado 6.1.1.6; resolver o documentar las 4 claves OCR; y
+  revisar manualmente `data/processed/revision.md` antes de usar datos clínicos críticos.
+- Documentación: `README.org` y el estado de `PLAN.org` se actualizan a 807 chunks y 15 marcados
+  para revisión. El código de esta decisión ya está implementado; esta tarea solo registra el ADR.
+
+*Revisar si:*
+
+- Una nueva ejecución de `scripts/medir_fichas.py` baja de 90,0 % de claves canónicas, o el Hit@5
+  cae por debajo de 11/11 en el mismo `eval/preguntas.jsonl`.
+- Aparece un chunk fusionado con valores de dos vacunas distintas o una continuación asignada a la
+  ficha equivocada durante la revisión manual de los 15 chunks marcados.
+- La ficha 6.1.1.6 sigue en 0 % tras la siguiente iteración de detección de encabezados; en ese
+  caso la deuda de secciones pasa a ser bloqueante para dar por cerrada la ingesta key-value.
+- Se añaden documentos, preguntas de evaluación o una nueva versión de chunking: recalcular el gold
+  set y repetir esta comparación antes de mantener la decisión.
 
 ** 18.4 Cómo aplicar este método a una decisión futura
 

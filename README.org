@@ -212,8 +212,10 @@ Comandos equivalentes sin =make=:
 * Estado
 
 - Pipeline de ingesta ejecutada sobre las 140 páginas.
-- 790 chunks indexados en ChromaDB; 17 marcados para revisión.
-- 11/11 preguntas de evaluación recuperan la fuente esperada en el top 5.
+- 807 chunks indexados en ChromaDB; 15 marcados para revisión.
+- Fichas key-value: 277/296 claves canónicas (93,6 %) y 0 continuaciones huérfanas (ADR-006).
+- 20/20 preguntas de evaluación recuperan la fuente esperada en el top 5; el conjunto incluye
+  5 preguntas fuera de alcance ([[file:eval/preguntas.md][eval/preguntas.md]]).
 - API probada en local y en Docker, con la base montada como único volumen.
 - Modo extractivo y abstención para preguntas fuera de alcance.
 - Respuestas y fragmentos en Markdown, con tablas, listas y viñetas.
