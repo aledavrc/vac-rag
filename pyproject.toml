@@ -22,8 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ingest = [
-    "ocrmypdf>=17",
-    "docling>=2.149",
+    "docling[rapidocr]>=2.149,<2.150",
     "pypdf>=5",
 ]
 dev = [

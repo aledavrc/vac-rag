@@ -38,7 +38,30 @@ class Settings(BaseSettings):
     llm_api_key: str = "ollama"
     llm_timeout: float = 60.0
 
-    ocr_jobs: int = 4
+    # OCR dentro de Docling: rapidocr (ONNX, sin binarios) o tesseract_cli.
+    ocr_engine: str = "rapidocr"
+    ocr_lang: list[str] = ["es"]
+    ocr_scale: float = 3.0
+    ocr_mode: str = "full_page"
+    ocr_model_size: str = "medium"
+    ocr_psm: int = 3
+    images_scale: float = 3.0
+
+    @field_validator("ocr_engine")
+    @classmethod
+    def _known_ocr_engine(cls, value: str) -> str:
+        engine = value.strip().lower()
+        if engine not in {"rapidocr", "tesseract_cli"}:
+            raise ValueError("ocr_engine debe ser 'rapidocr' o 'tesseract_cli'")
+        return engine
+
+    @field_validator("ocr_mode")
+    @classmethod
+    def _known_ocr_mode(cls, value: str) -> str:
+        mode = value.strip().lower()
+        if mode not in {"full_page", "layout_regions", "pdf_aware_layout_regions", "default"}:
+            raise ValueError("ocr_mode no válido")
+        return mode
 
     @field_validator("llm_base_url", mode="before")
     @classmethod
@@ -48,8 +71,10 @@ class Settings(BaseSettings):
         return value
 
     @property
-    def ocr_dir(self) -> Path:
-        return self.data_dir / "ocr"
+    def derived_dir(self) -> Path:
+        """PDFs derivados sin capa de texto (por ejemplo, páginas rotadas)."""
+
+        return self.data_dir / "derived"
 
     @property
     def processed_dir(self) -> Path:
@@ -81,7 +106,7 @@ class Settings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         for path in (
-            self.ocr_dir,
+            self.derived_dir,
             self.processed_dir,
             self.overrides_dir,
             self.chroma_dir,
@@ -102,13 +127,6 @@ class DocumentSpec:
     @property
     def stem(self) -> str:
         return self.pdf.stem
-
-    @property
-    def ocr_path(self) -> Path:
-        return Path("data/ocr") / f"{self.stem}.pdf"
-
-    def ocr_path_in(self, settings: Settings) -> Path:
-        return settings.ocr_dir / f"nts-246-parte-{self.part}.pdf"
 
     @property
     def printed_first_page(self) -> int:

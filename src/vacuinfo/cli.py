@@ -8,7 +8,6 @@ from vacuinfo.config import discover_documents, get_settings
 from vacuinfo.ingest.chunk import build_chunks
 from vacuinfo.ingest.extract import extract_documents
 from vacuinfo.ingest.index import build_index
-from vacuinfo.ingest.ocr import run_ocr
 from vacuinfo.rag.answer import generate_answer
 from vacuinfo.rag.retrieve import Retriever
 
@@ -23,8 +22,6 @@ def cmd_ingestar(args: argparse.Namespace) -> None:
     specs = _specs(settings)
 
     if not args.solo_indice:
-        if not args.sin_ocr:
-            run_ocr(settings, specs, force=args.fuerza_ocr)
         if not args.sin_extraccion:
             extract_documents(settings, specs, force=args.fuerza_extraccion)
         chunks = build_chunks(settings, specs)
@@ -34,14 +31,6 @@ def cmd_ingestar(args: argparse.Namespace) -> None:
 
     if not args.sin_indice:
         build_index(settings, reset=True)
-
-
-def cmd_ocr(args: argparse.Namespace) -> None:
-    settings = get_settings()
-    specs = _specs(settings)
-    if args.parte:
-        specs = tuple(spec for spec in specs if spec.part == args.parte)
-    run_ocr(settings, specs, force=args.fuerza)
 
 
 def cmd_extraer(args: argparse.Namespace) -> None:
@@ -174,21 +163,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vacuinfo", description="VacuInfo CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    ingest = sub.add_parser("ingestar", help="OCR + extracción + chunks + índice")
-    ingest.add_argument("--fuerza-ocr", action="store_true")
+    ingest = sub.add_parser("ingestar", help="Extracción Docling (OCR) + chunks + índice")
     ingest.add_argument("--fuerza-extraccion", action="store_true")
     ingest.add_argument("--solo-indice", action="store_true")
-    ingest.add_argument("--sin-ocr", action="store_true")
     ingest.add_argument("--sin-extraccion", action="store_true")
     ingest.add_argument("--sin-indice", action="store_true")
     ingest.set_defaults(func=cmd_ingestar)
 
-    ocr = sub.add_parser("ocr", help="Solo OCR")
-    ocr.add_argument("--fuerza", action="store_true")
-    ocr.add_argument("--parte", type=int, choices=(1, 2))
-    ocr.set_defaults(func=cmd_ocr)
-
-    extraer = sub.add_parser("extraer", help="Solo extracción con Docling")
+    extraer = sub.add_parser("extraer", help="Solo extracción con Docling (layout + OCR)")
     extraer.add_argument("--fuerza", action="store_true")
     extraer.add_argument("--parte", type=int, choices=(1, 2))
     extraer.set_defaults(func=cmd_extraer)
