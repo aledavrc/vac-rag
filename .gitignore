@@ -6,6 +6,7 @@ __pycache__/
 .env
 
 # Datos generados
+data/derived/
 data/ocr/
 data/processed/
 data/index/
@@ -24,3 +25,8 @@ build/
 
 # Índice local de CodeGraph
 .codegraph/
+
+# Basura de sistemas operativos
+.DS_Store
+Thumbs.db
+desktop.ini
