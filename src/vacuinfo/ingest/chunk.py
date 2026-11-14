@@ -131,6 +131,24 @@ def normalize_field_name(key: str) -> str:
     return _KNOWN_BY_NORMALIZED[match[0]] if match else cleaned
 
 
+def _split_fused_key(key: str) -> tuple[str, str] | None:
+    """Detecta una clave que fusiona dos campos canónicos consecutivos.
+
+    Solo se parte si la clave normalizada es exactamente la concatenación de
+    dos campos consecutivos de `KNOWN_FIELDS` (separados por espacios o signos).
+    Esto descarta claves sueltas como "CONTRAINDICACIÓN", que contiene
+    "INDICACIÓN" como subcadena pero no es una fusión.
+    """
+
+    normalized = normalize_for_match(key)
+    for i in range(len(KNOWN_FIELDS) - 1):
+        first = normalize_for_match(KNOWN_FIELDS[i])
+        second = normalize_for_match(KNOWN_FIELDS[i + 1])
+        if re.fullmatch(re.escape(first) + r"[\W_]+" + re.escape(second), normalized):
+            return KNOWN_FIELDS[i], KNOWN_FIELDS[i + 1]
+    return None
+
+
 def detect_vaccine(text: str) -> str | None:
     normalized = f" {normalize_for_match(text)} "
     best: tuple[int, str] | None = None
@@ -393,27 +411,73 @@ def _table_chunks(
     # etiquetas conocidas; admiten 2 o más columnas (variantes/duplicados).
     if _is_ficha(rows):
         value_cols = _value_columns(rows)
-        for row_index, row in enumerate(rows):
-            key = normalize_field_name(row[0])
-            value = _join_values([row[j] for j in value_cols])
-            if not value:
-                continue
+
+        def make_chunk(key: str, value: str, row_index: int, meta: dict) -> dict:
             text = f"{section} — {key}: {value}" if section else f"{key}: {value}"
+            return {
+                "texto": text,
+                "tipo": "ficha_campo",
+                "metadata": meta,
+                "_row": row_index,
+                "_key": key,
+                "_value": value,
+            }
+
+        row_index = 0
+        while row_index < len(rows):
+            raw_key = rows[row_index][0]
+            value = _join_values([rows[row_index][j] for j in value_cols])
+            if not value:
+                row_index += 1
+                continue
+
+            # Fase 5: partir una celda de clave que fusiona dos campos.
+            fused = _split_fused_key(raw_key)
+            if fused is not None:
+                first, second = fused
+                continuation = ""
+                if row_index + 1 < len(rows) and not rows[row_index + 1][0].strip():
+                    continuation = _join_values(
+                        [rows[row_index + 1][j] for j in value_cols]
+                    )
+                if continuation:
+                    # Partición segura: el 1er campo toma la celda actual y el
+                    # 2º la fila de continuación que le sigue.
+                    chunks.append(
+                        make_chunk(
+                            first,
+                            value,
+                            row_index,
+                            metadata("ficha_campo", f"{first} {value}"),
+                        )
+                    )
+                    chunks.append(
+                        make_chunk(
+                            second,
+                            continuation,
+                            row_index + 1,
+                            metadata("ficha_campo", f"{second} {continuation}"),
+                        )
+                    )
+                    row_index += 2
+                    continue
+                # Sin continuación: el valor no se puede repartir con seguridad;
+                # se conserva íntegro en el 2º campo y se marca para revisión.
+                meta = metadata("ficha_campo", f"{second} {value}")
+                meta["revisar"] = True
+                meta["notas"] = f"clave fusionada ({first} + {second}); valor no separable"
+                chunks.append(make_chunk(second, value, row_index, meta))
+                row_index += 1
+                continue
+
+            key = normalize_field_name(raw_key)
             meta = metadata("ficha_campo", f"{key} {value}")
             if key != "Continuación" and key not in KNOWN_FIELDS:
                 # Clave OCR no resuelta: se conserva y se marca (no se infiere).
                 meta["revisar"] = True
                 meta["notas"] = "clave no canónica (OCR)"
-            chunks.append(
-                {
-                    "texto": text,
-                    "tipo": "ficha_campo",
-                    "metadata": meta,
-                    "_row": row_index,
-                    "_key": key,
-                    "_value": value,
-                }
-            )
+            chunks.append(make_chunk(key, value, row_index, meta))
+            row_index += 1
         return chunks
 
     header = rows[0] if looks_like_header(rows[0]) else None

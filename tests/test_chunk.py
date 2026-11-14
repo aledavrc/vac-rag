@@ -5,6 +5,7 @@ from vacuinfo.ingest.chunk import (
     _SECTION_HEADING,
     KNOWN_FIELDS,
     _is_ficha,
+    _split_fused_key,
     _table_structure_flags,
     _value_columns,
     build_chunks,
@@ -366,12 +367,17 @@ def test_build_chunks_pentavalente_merges_split_continuations(tmp_path):
     )
     assert "Reacciones locales: Dolor, enrojecimiento" in efectos["texto"]
 
-    # Continuación intra-página de una clave fusionada (DOSIS + CONSERVACIÓN).
-    dosis = next(
-        chunk for chunk in fichas if "DOSIS (CANTIDAD) CONSERVACIÓN" in chunk["texto"]
-    )
+    # Fase 5: la clave fusionada DOSIS + CONSERVACIÓN se parte y la continuación
+    # se asigna al campo CONSERVACIÓN DE LA VACUNA.
+    dosis = next(chunk for chunk in fichas if "DOSIS (CANTIDAD)" in chunk["texto"])
     assert "0.5 ml." in dosis["texto"]
-    assert "+2Ca+8 °C Frasco abierto" in dosis["texto"]
+    assert "+2Ca" not in dosis["texto"]
+
+    conservacion = next(
+        chunk for chunk in fichas if "CONSERVACIÓN DE LA VACUNA" in chunk["texto"]
+    )
+    assert "+2Ca+8 °C Frasco abierto" in conservacion["texto"]
+    assert not conservacion["metadata"].get("revisar")
 
     # Los campos ajenos al corte no se contaminan.
     composicion = next(chunk for chunk in fichas if "COMPOSICIÓN" in chunk["texto"])
@@ -490,6 +496,49 @@ def test_build_chunks_continuation_survives_residual_header_texto(tmp_path):
     assert not any("Continuación" in chunk["texto"] for chunk in fichas)
     esquema = next(chunk for chunk in fichas if "ESQUEMA DE VACUNACIÓN" in chunk["texto"])
     assert "Sradosis a los 6 meses de la primera dosis" in esquema["texto"]
+
+
+def test_split_fused_key():
+    assert _split_fused_key("DOSIS (CANTIDAD) CONSERVACIÓN DE LA VACUNA") == (
+        "DOSIS (CANTIDAD)",
+        "CONSERVACIÓN DE LA VACUNA",
+    )
+    assert _split_fused_key("TIPO DE VACUNA DESCRIPCIÓN ,") == (
+        "TIPO DE VACUNA",
+        "DESCRIPCIÓN",
+    )
+    # "CONTRAINDICACIÓN" contiene "INDICACIÓN" como subcadena, pero no es fusión.
+    assert _split_fused_key("CONTRAINDICACIÓN") is None
+    assert _split_fused_key("DOSIS (CANTIDAD)") is None
+    assert _split_fused_key("") is None
+
+
+def test_build_chunks_fused_key_without_continuation_is_flagged(tmp_path):
+    # Caso real p.23: clave fusionada sin fila de continuación; el valor no se
+    # puede repartir con seguridad y se conserva íntegro marcando revisar.
+    page = """## 6.1.1.9. VACUNA CONTRA ROTAVIRUS
+
+| TIPO DE VACUNA DESCRIPCIÓN , | Virus Vivo Atenuado Es una vacuna líquida monovalente. |
+| COMPOSICIÓN | 1 dosis (1,5 ml) contiene rotavirus vivo atenuado. |
+| PRESENTACIÓN | Monodosis, jeringa precargada de 1.5 ml. |
+"""
+    chunks = _chunks_from_page(tmp_path, page)
+    fichas = [chunk for chunk in chunks if chunk["tipo"] == "ficha_campo"]
+
+    # La clave fusionada se parte: no queda "TIPO DE VACUNA DESCRIPCIÓN".
+    assert not any("TIPO DE VACUNA DESCRIPCIÓN" in chunk["texto"] for chunk in fichas)
+
+    # El valor íntegro se conserva en el segundo campo, marcado para revisión.
+    descripcion = next(chunk for chunk in fichas if "DESCRIPCIÓN" in chunk["texto"])
+    assert "Virus Vivo Atenuado" in descripcion["texto"]
+    assert "Es una vacuna líquida monovalente" in descripcion["texto"]
+    assert descripcion["metadata"]["revisar"] is True
+    assert "valor no separable" in descripcion["metadata"]["notas"]
+
+    # Los campos siguientes quedan intactos.
+    composicion = next(chunk for chunk in fichas if "COMPOSICIÓN" in chunk["texto"])
+    assert "rotavirus vivo atenuado" in composicion["texto"]
+    assert not composicion["metadata"].get("revisar")
 
 
 def test_build_chunks_orphan_continuation_is_kept_and_flagged(tmp_path):
