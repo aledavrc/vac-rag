@@ -7,7 +7,7 @@ import chromadb
 from rank_bm25 import BM25Okapi
 
 from vacuinfo.config import Settings
-from vacuinfo.ingest.chunk import detect_vaccine
+from vacuinfo.ingest.chunk import KNOWN_FIELDS, detect_vaccine
 from vacuinfo.ingest.clean import normalize_for_match
 from vacuinfo.rag.embeddings import Embedder
 
@@ -74,6 +74,38 @@ def _tokenize(text: str) -> list[str]:
     return [token for token in normalize_for_match(text).split() if token not in STOPWORDS]
 
 
+# Palabras de la etiqueta que no identifican el campo por sí solas.
+_FIELD_GENERIC = {"vacuna", "vacunas", "otras", "posibles"}
+_FIELD_TOKENS: dict[str, set[str]] = {
+    field: set(_tokenize(field)) - _FIELD_GENERIC for field in KNOWN_FIELDS
+}
+
+
+def _has_field(text: str, label: str) -> bool:
+    """Comprueba que `label` sea la clave de un campo, no parte del encabezado."""
+
+    upper = text.upper()
+    return f" — {label}: " in upper or upper.startswith(f"{label}: ")
+
+
+def _field_matches(query_tokens: set[str], text: str) -> int:
+    """Cuenta campos de ficha mencionados por la pregunta y presentes en el texto.
+
+    El boost léxico evita que un chunk de otra ficha (por ejemplo, "uso
+    simultáneo") gane solo por el nombre de la vacuna y la cercanía vectorial.
+    """
+
+    matches = 0
+    for label, tokens in _FIELD_TOKENS.items():
+        if tokens & query_tokens and _has_field(text, label):
+            matches += 1
+    return matches
+
+
+def _matched_fields(query_tokens: set[str]) -> list[str]:
+    return [label for label, tokens in _FIELD_TOKENS.items() if tokens & query_tokens]
+
+
 def _where(filtros: Any) -> dict | None:
     if filtros is None:
         return None
@@ -125,10 +157,12 @@ class Retriever:
         where = _where(filtros)
         query_embedding = self.embedder.embed_query(query)
         query_tokens = set(_tokenize(query))
+        query_vaccine = detect_vaccine(query)
 
         candidates: dict[str, RetrievedChunk] = {}
         vector_ranked: list[str] = []
         bm25_ranked: list[str] = []
+        field_ranked: list[str] = []
 
         # 1. Búsqueda vectorial
         vector = self.collection.query(
@@ -153,6 +187,7 @@ class Retriever:
                 )
 
         # 2. Búsqueda léxica
+        scores = None
         if self.bm25 is not None:
             scores = self.bm25.get_scores(_tokenize(query))
             order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
@@ -177,6 +212,33 @@ class Retriever:
                 if len(bm25_ranked) >= self.settings.bm25_k:
                     break
 
+        # 2b. Expansión por campo de ficha: el chunk del campo pedido puede
+        # quedar fuera del top BM25/vectorial por ser largo o por competir con
+        # decenas de fichas del mismo campo. Se añade como tercer ranking.
+        matched_fields = _matched_fields(query_tokens)
+        if matched_fields and query_vaccine and scores is not None:
+            field_scored: list[tuple[float, str, dict[str, Any]]] = []
+            for index, chunk in enumerate(self.chunks):
+                if chunk.get("vacuna") != query_vaccine:
+                    continue
+                if not self._matches(chunk, filtros):
+                    continue
+                text = str(chunk.get("texto", ""))
+                if any(_has_field(text, label) for label in matched_fields):
+                    field_scored.append((float(scores[index]), chunk["id"], chunk))
+            field_scored.sort(key=lambda item: item[0], reverse=True)
+            for _score, chunk_id, chunk in field_scored[: self.settings.bm25_k]:
+                field_ranked.append(chunk_id)
+                if chunk_id not in candidates:
+                    candidates[chunk_id] = RetrievedChunk(
+                        id=chunk_id,
+                        text=chunk.get("texto", ""),
+                        metadata=chunk,
+                        origenes={"campo"},
+                    )
+                else:
+                    candidates[chunk_id].origenes.add("campo")
+
         # 3. Reciprocal Rank Fusion + pequeño refuerzo por coincidencia de sección.
         for rank, chunk_id in enumerate(vector_ranked, start=1):
             if chunk_id in candidates:
@@ -184,7 +246,9 @@ class Retriever:
         for rank, chunk_id in enumerate(bm25_ranked, start=1):
             if chunk_id in candidates:
                 candidates[chunk_id].rrf += 1.0 / (60 + rank)
-        query_vaccine = detect_vaccine(query)
+        for rank, chunk_id in enumerate(field_ranked, start=1):
+            if chunk_id in candidates:
+                candidates[chunk_id].rrf += 1.0 / (60 + rank)
         dose_field_boost = "dosis" in query_tokens and not (
             {"cuantas", "cuantos", "numero"} & query_tokens
         )
@@ -196,8 +260,15 @@ class Retriever:
                     item.rrf += min(0.06, 0.02 * overlap)
             if query_vaccine and item.vacuna == query_vaccine:
                 item.rrf += 0.02
+            elif query_vaccine and item.vacuna:
+                # Si la pregunta nombra una vacuna, los fragmentos de otra ficha
+                # no deben competir por el mismo campo.
+                item.rrf -= 0.02
             if dose_field_boost and "DOSIS (CANTIDAD)" in item.text.upper():
                 item.rrf += 0.03
+            field_hits = _field_matches(query_tokens, item.text)
+            if field_hits:
+                item.rrf += min(0.08, 0.04 * field_hits)
             text_tokens = set(_tokenize(item.text))
             lexical_overlap = len(query_tokens & text_tokens) / max(len(query_tokens), 1)
             item.rrf += 0.04 * lexical_overlap
