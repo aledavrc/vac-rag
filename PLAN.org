@@ -23,16 +23,18 @@ LangChain, LlamaIndex, microservicios, frontend ni fine-tuning en la primera ver
 
 La versión inicial ya está implementada y ejecutada sobre el corpus:
 
-- OCR de las 140 páginas con Tesseract español (`tessdata_best`, 300 ppp).
-- Extracción con Docling y corrección de orientación de las páginas giradas.
-- Normalización contextual de unidades y banderas de valores dudosos.
-- 807 chunks indexados; 15 marcados para revisión.
-- Fichas key-value: 277/296 claves canónicas (93,6 %) y 0 continuaciones huérfanas (ADR-006).
+- Extracción con Docling y OCR nativo (RapidOCR/ONNX) sobre los PDF originales, sin OCRmyPDF.
+- Corrección de orientación de las páginas giradas sin inyectar texto roto.
+- Fusión inter-página de tablas, notas al pie y párrafos cortados, también entre los dos PDF.
+- Léxico determinista del dominio y normalización contextual de unidades y banderas de revisión.
+- 821 chunks indexados; 6 marcados para revisión.
+- Fichas key-value: 291/296 claves canónicas (98,3 %), 0 continuaciones huérfanas y 0 claves no
+  canónicas (ADR-006/ADR-007).
 - Respuestas y fragmentos en Markdown, con listas y tablas.
-- Búsqueda híbrida con refuerzo léxico y de vacuna.
+- Búsqueda híbrida con refuerzo léxico, de vacuna y de campo de ficha (ADR-008).
 - API FastAPI con modo extractivo, citas y abstención.
 - Imagen Docker de consulta que monta solo =data/index=.
-- Evaluación inicial: 11/11 preguntas recuperan la fuente esperada en el top 5.
+- Evaluación: 20/20 preguntas dentro de alcance recuperan la fuente esperada en el top 5.
 
 Los detalles de uso están en =README.org=.
 
@@ -132,19 +134,16 @@ Hallazgos que condicionan el diseño:
   pdf/*.pdf
       │
       ▼
-  [1] OCR (OCRmyPDF + Tesseract español)
-      │  PDF con capa de texto, enderezado y limpio
+  [1] Docling: layout + OCR nativo (RapidOCR/ONNX) + TableFormer
+      │  Markdown por página con secciones y tablas
       ▼
-  [2] Extracción de estructura (Docling)
-      │  Markdown + JSON con páginas, secciones y tablas
+  [2] Fusión inter-página + limpieza con léxico del dominio
+      │  tablas y párrafos continuos, sin encabezados ni sellos
       ▼
-  [3] Limpieza y normalización
-      │  sin encabezados, sellos ni guiones de corte
-      ▼
-  [4] Chunking por sección, ficha y tabla
+  [3] Chunking por sección, ficha y tabla
       │  data/chunks.jsonl  ← fuente de verdad
       ▼
-  [5] Embeddings + ChromaDB
+  [4] Embeddings + ChromaDB
          data/index/chroma/
 
 
@@ -186,14 +185,15 @@ Componentes:
 | =pdftotext=                     | No      | Los PDF no tienen capa de texto                                      |
 | Tesseract directo               | Parcial | Buen texto corrido, pero destruye filas y columnas                   |
 | Camelot / Tabula / pdfplumber   | No      | Dependen de texto digital o de una capa OCR alineada                  |
-| *OCRmyPDF + Docling*            | *Sí*    | OCR robusto + análisis de layout + reconstrucción de tablas           |
+| OCRmyPDF + Docling              | Sí      | Reemplazado por ADR-007: el PDF intermedio aplana el layout           |
+| *Docling + OCR nativo*          | *Sí*    | OCR por región/celda después del layout + TableFormer                 |
 | Marker / MinerU                 | Alternativa | Buena calidad, pero más pesados y con modelos grandes               |
 | Transcripción manual            | Solo control | No escala, pero es útil para validar tablas críticas               |
 
-*Recomendación:* usar *OCRmyPDF* para producir un PDF buscable y *Docling* para extraer texto,
-layout y tablas a Markdown/JSON. Es la combinación con mejor relación calidad/complejidad para 140
-páginas escaneadas. Marker o MinerU quedan como respaldo si la calidad de Docling no alcanza en las
-tablas.
+*Recomendación (ADR-007):* dejar que *Docling* haga layout, OCR y tablas en una sola pasada sobre
+el PDF escaneado original. RapidOCR (ONNX Runtime) reconoce cada región y celda en español y evita
+el aplanado de columnas que producía Tesseract sobre la página completa. Marker o MinerU quedan como
+respaldo si la calidad de Docling no alcanza en las tablas.
 
 ** 6.2 Pipeline recomendado, paso a paso**
 
@@ -205,6 +205,10 @@ tablas.
 - No modificar nunca los PDF originales de =pdf/=.
 
 *** Paso 1 — OCR con OCRmyPDF
+
+*Nota:* este paso quedó reemplazado por ADR-007. El OCR corre ahora dentro de Docling
+(RapidOCR/ONNX), sin PDF intermedio con capa de texto. Se conserva el registro histórico de la
+decisión original.
 
 Objetivo: obtener un PDF con texto invisible, enderezado y sin ruido de fondo, conservando la
 imagen original para la reconstrucción de tablas.
@@ -246,6 +250,8 @@ Notas:
 
 *** Paso 2 — Extracción de estructura con Docling
 
+*Nota:* desde ADR-007 este paso incluye también el OCR; no consume un PDF con capa de texto.
+
 Objetivo: convertir cada PDF en Markdown/JSON con orden de lectura, secciones, tablas y referencia
 de página.
 
@@ -258,10 +264,10 @@ Salida esperada:
 
 Configuración conceptual:
 
-- Activar análisis de layout y reconstrucción de tablas (TableFormer).
+- Activar análisis de layout y reconstrucción de tablas (TableFormer ACCURATE).
+- Activar OCR nativo (`do_ocr=True`) con RapidOCR o Tesseract CLI y `images_scale=3.0`.
 - Desactivar imágenes de página y otros artefactos que no se necesitan.
-- Usar el texto del PDF OCR; si Docling vuelve a hacer OCR, comparar calidad y elegir un solo
-  camino para no duplicar errores.
+- No usar un PDF pre-OCR: Docling segmenta primero y reconoce después cada región/celda.
 
 Si una tabla sale mal:
 
@@ -282,8 +288,12 @@ La limpieza se hace sobre el Markdown/JSON extraído, no sobre el PDF.
 - Unir palabras cortadas por guion al final de línea (=inmuni-\\nzaciones= → =inmunizaciones=).
 - Normalizar espacios, saltos de línea, comillas, guiones y caracteres Unicode (NFC).
 - Conservar tildes, signos =°=, =N°=, unidades (=mcg=, =ml=, =°C=) y referencias a normas.
-- Normalizar unidades solo en contexto numérico: =0.5 mi= → =0.5 ml=, =9,5 mí= → =9,5 ml=,
-  =+2'Ca+8%C= → =+2 °C a+8 °C=.
+- Normalizar unidades solo en contexto numérico: =0.5 mi= → =0.5 ml=, =O,5 ml= → =0.5 ml=,
+  =+2'Ca+8%C=, =+2 oC a +8 oC=, =+20C a +80C= y =2°C a 8°C= → =+2 °C a +8 °C=.
+- Canonizar ordinales de dosis: =lra=, =1.a=, =1ª= → =1ra=; =3era= → =3ra=; =1er= y =2do=
+  para refuerzos.
+- Aplicar un léxico determinista de siglas del dominio (=HVB= → =HvB=, =VHP= → =VPH=,
+  =DTP= → =DPT=) sin tocar nombres ni datos clínicos.
 - No adivinar puntos decimales perdidos. =05 ml= se conserva y se marca con =revisar=true=.
 - Marcar también campos =DOSIS (CANTIDAD)= con formato no numérico (por ejemplo, =Di5ami=).
 - No aplicar corrección ortográfica clínica automática. Un cambio de "0,5 ml" a "5 ml" sería
@@ -298,7 +308,10 @@ La limpieza se hace sobre el Markdown/JSON extraído, no sobre el PDF.
 - Marcar celdas vacías de forma explícita, sin inventar contenido.
 - Si una tabla continúa en la página siguiente, mantener el título y el encabezado en cada fila
   resultante.
-- No fusionar tablas distintas solo porque están en páginas consecutivas.
+- Fusionar tablas cortadas entre páginas solo si comparten ancho de columnas y no aparece una ficha
+  nueva (TIPO DE VACUNA o número 6.1.1.N) en el bloque siguiente. Las notas al pie que abren la
+  página siguiente se adjuntan a la tabla anterior.
+- Si la tabla fusionada se divide en varios chunks, repetir el encabezado en cada uno.
 
 *Reglas de páginas:*
 
@@ -503,8 +516,8 @@ Criterios:
 vacuinfo/
 ├── pdf/                         # PDF originales (no se modifican)
 ├── data/                        # generado; no se versiona
-│   ├── ocr/                     # PDF con capa de texto
-│   ├── processed/               # Markdown/JSON limpio + incidencias
+│   ├── derived/                  # PDFs derivados (páginas rotadas, sin capa de texto)
+│   ├── processed/               # Markdown/JSON limpio + incidencias + fusiones.md
 │   ├── tables/                  # Markdown + rows.jsonl + meta.json por tabla
 │   ├── chunks.jsonl             # fuente de verdad de la ingesta
 │   ├── manifest.json
@@ -512,11 +525,12 @@ vacuinfo/
 ├── src/vacuinfo/
 │   ├── config.py                # variables de entorno y rutas
 │   ├── data/
-│   │   ├── vacuinfo.user-words  # vocabulario OCR
-│   │   └── vacuinfo.patterns    # patrones numéricos
+│   │   ├── vacuinfo.user-words  # vocabulario OCR (fallback Tesseract)
+│   │   └── vacuinfo.patterns    # patrones numéricos (fallback Tesseract)
 │   ├── ingest/
-│   │   ├── ocr.py               # envoltura de OCRmyPDF
-│   │   ├── extract.py           # Docling → Markdown/JSON
+│   │   ├── extract.py           # Docling: layout, tablas y OCR → Markdown/JSON
+│   │   ├── merge.py             # fusión de tablas/notas/párrafos entre páginas
+│   │   ├── lexicon.py           # reparación de layout y léxico del dominio
 │   │   ├── clean.py             # limpieza de texto y tablas
 │   │   ├── normalize.py         # unidades y banderas de revisión
 │   │   ├── chunk.py             # fichas, secciones y tablas
@@ -555,14 +569,17 @@ utilidades, pero la separación permite probar cada etapa y volver a ejecutar so
 - =fastembed= + =onnxruntime= para embeddings, sin PyTorch en runtime.
 - =rank-bm25= para la búsqueda léxica.
 - =httpx= o =openai= para el cliente del LLM.
-- =ocrmypdf= (Python y CLI) y =docling= para la ingesta.
+- =docling[rapidocr]= (layout, TableFormer, OCR vía ONNX Runtime) para la ingesta. La variante
+  =tesseract_cli= usa el binario de Tesseract y =models/tessdata=.
+- =pypdf= para girar páginas sin añadir texto.
 - =pytest= para pruebas.
 
 ** 12.2 Sistema
 
-- Tesseract con el paquete de idioma español (=tessdata_best=).
-- Ghostscript.
-- =unpaper= si se usa =--clean= de OCRmyPDF.
+- Nada obligatorio para el OCR por defecto: RapidOCR corre sobre ONNX Runtime.
+- Opcional (fallback =tesseract_cli=): Tesseract con el paquete de idioma español
+  (=tessdata_best=).
+- Opcional (fallback): Ghostscript y =unpaper= si se preprocesa el PDF por fuera.
 
 Ejemplo en Arch Linux:
 
@@ -818,6 +835,8 @@ separadora; las listas inline `+`/`*` se convierten en viñetas. El cliente rend
 
 *** ADR-006 — Fusión conservadora de fichas key-value multipágina
 
+*Nota:* el estado posterior a esta decisión se actualiza en ADR-007 (OCR nativo de Docling).
+
 *Contexto:* ADR-002 revirtió la extracción centrada en tablas porque la detección automática de
 encabezados fallaba y asociaba tablas a secciones incorrectas. Aun así, el corpus conservaba el
 problema de fondo: fichas de vacuna partidas entre páginas, claves OCR rotas, continuaciones
@@ -923,6 +942,234 @@ no se fusionan tablas como objetos.
   caso la deuda de secciones pasa a ser bloqueante para dar por cerrada la ingesta key-value.
 - Se añaden documentos, preguntas de evaluación o una nueva versión de chunking: recalcular el gold
   set y repetir esta comparación antes de mantener la decisión.
+
+*** ADR-007 — OCR nativo de Docling y fusión inter-página
+
+*Contexto:* hasta la Fase 7 el OCR se ejecutaba con OCRmyPDF y Tesseract sobre la página completa,
+y Docling recibía un PDF ya aplanado. Ese orden destruye el layout antes de que Docling lo
+analice: mezcla líneas de columnas y celdas, rompe tablas y confunde dosis y temperaturas. En la
+p. 30 la misma tabla salía como `0-5 mi.` y `Ca+8C` con OCRmyPDF, frente a `0.5 ml.` y
+`+2°C a +8°C` con el OCR interno de Docling. Además, las tablas partidas entre páginas seguían
+llegando al chunker como tablas distintas.
+
+*Opciones consideradas:*
+
+- *A. No cambiar:* mantener OCRmyPDF + Docling. El coste de desarrollo es cero, pero el layout ya
+  está destruido antes de TableFormer y las tablas partidas siguen rotas.
+- *B. Tesseract de página completa dentro de Docling:* más simple, pero en la prueba comparativa
+  conservó peor las dosis y las temperaturas que RapidOCR y sigue aplanando texto dentro de cada
+  región.
+- *C. RapidOCR dentro de Docling (ONNX Runtime), layout y tablas primero, OCR por región/celda:*
+  sin binarios externos, determinista y con mejor lectura de celdas.
+- *D. VLM de página completa:* mayor potencial, pero más lento, no determinista y contrario a
+  ADR-004 (veracidad y reproducibilidad).
+
+*Criterios:* calidad de tablas y celdas, lectura de dosis/temperaturas, determinismo, dependencias
+del entorno, tiempo de ingesta y trazabilidad de página.
+
+*Evidencia:* misma página, mismo TableFormer ACCURATE y mismo `images_scale=3.0`:
+
+| Motor | Tiempo/pág. | DOSIS | CONSERVACIÓN |
+|-------+-------------+-------+--------------|
+| Tesseract CLI, página completa | 11,7 s | `0-5 mi.` | `Ca+8C` |
+| RapidOCR ONNX medium, página completa | 25,9 s | `0.5 ml.` | `+2°C a +8°C` |
+
+Ingesta completa (140 páginas, CPU): ~18 minutos (97 páginas de la parte 1 en ~10 min y 43 de la
+parte 2 en ~8 min). Comparación con el estado anterior a esta decisión (ADR-006):
+
+| Métrica | Antes | Final | Δ |
+|---------+-------+-------+---|
+| Chunks totales | 807 | 821 | +14 |
+| · `texto` / `tabla_fila` | 196 / 267 | 186 / 303 | -10 / +36 |
+| · `tabla_completa` | 32 | 23 | -9 |
+| · `ficha_campo` | 312 | 309 | -3 |
+| Claves canónicas | 277/296 (93,6 %) | 291/296 (98,3 %) | +4,7 pp |
+| Fichas completas | 18/23 | 18/23 | = |
+| Claves no canónicas | 4 | 0 | -4 |
+| Claves "Continuación" | 0 | 0 | = |
+| Chunks con `revisar=true` | 15 | 6 | -9 |
+| Hit@5 (`eval/preguntas.jsonl`) | 20/20 | 20/20 | = |
+
+La ficha 6.1.1.6 (Hib), que ADR-006 dejó en 0/13 por un encabezado no detectado, pasa a 13/13.
+Quedan 5 claves del gold sin cubrir: `TIPO DE VACUNA` en 6.1.1.2, `JERINGAS A UTILIZAR` en
+6.1.1.4, `USO SIMULTÁNEO CON OTRAS VACUNAS` en SPR y fiebre amarilla, y `DOSIS (CANTIDAD)` en SR.
+Son errores de alineación de celdas o de encabezado, no de normalización; se dejan declarados.
+
+*Decisión:* se adopta la opción C.
+
+- Docling procesa el PDF escaneado original con `do_ocr=True`, `OcrMode.FULL_PAGE`,
+  `images_scale=3.0`, `Tesseract scale=3.0` y `TableFormerMode.ACCURATE`.
+- RapidOCR (ONNX Runtime, español) es el motor por defecto; `tesseract_cli` queda como alternativa
+  configurable y usa `models/tessdata` vía `TESSDATA_PREFIX`.
+- Las páginas giradas se rotan con `pypdf` antes de Docling, sin añadir una capa de texto.
+- Se elimina OCRmyPDF, el comando `ocr` y los flags `--sin-ocr`/`--fuerza-ocr`.
+- Un post-procesador sobre las páginas limpias (`merge.py`) fusiona tablas de anexos y esquemas
+  cortadas entre páginas, descarta el encabezado repetido, mueve las notas al pie a su tabla y une
+  párrafos sin puntuación de cierre. Las fichas key-value **no** se mueven de página: siguen
+  fusionándose a nivel de campo (ADR-006) para que `pagina` siga apuntando al valor exacto.
+- Si una tabla fusionada se divide en varios chunks, `tabla_fila` repite el encabezado.
+- Un léxico determinista (`lexicon.py`) repara encabezados/ítems pegados y normaliza siglas; en
+  `normalize.py` se resuelven temperaturas (`+20C`, `+2 oC`, `2°C`, `℃`, `°℃`), volúmenes
+  (`O,5 ml`, `0.5 m1`) y ordinales (`lra`, `1.a`, `1ª`, `3era`).
+
+*Consecuencias:*
+
+- Ventajas: mejor OCR de celdas, 0 claves no canónicas, 6.1.1.6 recuperada, 6 chunks para revisión
+  (antes 15), Hit@5 intacto y una sola pasada de ingesta.
+- Costes: el OCR interno es más lento que Tesseract CLI (25,9 s vs 11,7 s por página en la prueba);
+  el corpus completo tarda ~18 min en CPU. Se añade RapidOCR/ONNX Runtime y se retira OCRmyPDF.
+- Deuda: 5 claves del gold siguen faltando; el encabezado 6.1.1.23 de la p. 42 lo perdió Docling y
+  se corrigió con un override de página
+  (`data/overrides/nts-246-parte-1-p42.md`); conviene revisar si una versión futura de Docling lo
+  detecta sin override. Las tablas de anexos fusionadas se atribuyen a la página de inicio.
+- Documentación: README y PLAN se actualizan a 821 chunks, 291/296 claves y 6 marcados.
+
+*Revisar si:*
+
+- Una nueva ejecución de `scripts/medir_fichas.py` baja de 95 % de claves canónicas o el Hit@5 cae
+  por debajo de 20/20 con el mismo `eval/preguntas.jsonl`.
+- Aparece una tabla fusionada con filas de dos secciones o vacunas distintas, o una nota al pie
+  asignada a la tabla equivocada.
+- La ingesta tarda más de 45 minutos en CPU para 140 páginas o el uso de memoria supera el
+  disponible en el equipo objetivo.
+- Una actualización de Docling/RapidOCR cambia la salida de `pages.json` o deja de aceptar
+  `OcrMode.FULL_PAGE`/`TableFormerMode.ACCURATE`.
+- El override de la p. 42 deja de ser necesario o aparecen nuevos encabezados perdidos.
+
+*** ADR-008 — Refuerzo determinista por campo de ficha en la fusión RRF
+
+*Contexto:* dos consultas sobre la ficha de la vacuna antineumocócica devolvían primero un campo
+distinto del pedido:
+
+- "ambiente de conservación de la vacuna antineumocócica" devolvía `USO SIMULTÁNEO CON OTRAS
+  VACUNAS` en vez de `CONSERVACIÓN DE LA VACUNA`.
+- "esquema de vacunación de la vacuna antineumocócica" devolvía otra vez `USO SIMULTÁNEO` en vez
+  de `ESQUEMA DE VACUNACIÓN`.
+
+El diagnóstico mostró dos fallos distintos:
+
+- En conservación, el chunk correcto era el **rank 1 de BM25**, pero **no aparecía en el top 10
+  vectorial**. La fusión RRF solo le daba `1/(60+1)`, mientras que un chunk con rank vectorial 3 y
+  rank léxico 2 acumulaba más. El refuerzo léxico (`0.04 * solapamiento`) no compensaba.
+- En esquema, el chunk correcto quedaba en **BM25 rank 130** porque el término "esquema" es común
+  a todas las fichas y el valor es largo. Al no entrar ni en el top 10 vectorial ni en el top 10
+  léxico, **ni siquiera era candidato**: ningún boost podía recuperarlo.
+
+Añadir "frasco" o "accidentes" a la consulta la arreglaba solo por aumento del solapamiento
+léxico; el comportamiento era frágil frente a sinónimos ("ambiente", "temperatura", "cadena de
+frío").
+
+*Opciones consideradas:*
+
+- *A. Subir el peso de BM25:* mejora el rank 1 léxico, pero no rescata un rank 130 y puede degradar
+  preguntas que dependen de la paráfrasis semántica.
+- *B. Reindexar con embeddings más cortos (solo `campo: valor`):* puede mejorar la cercanía
+  vectorial, pero exige reconstruir el índice y no garantiza que el campo correcto gane.
+- *C. Refuerzo determinista por campo + expansión de candidatos:* si la pregunta menciona tokens de
+  una etiqueta canónica (`CONSERVACIÓN`, `DOSIS`, `COMPOSICIÓN`, `ESQUEMA`, etc.), se añaden los
+  chunks de esa vacuna que contienen el campo como un tercer ranking y se les aplica un boost. Es
+  interpretable, no depende del LLM y no exige reindexar.
+- *D. Expansión de consulta con sinónimos:* más flexible, pero introduce una lista de sinónimos
+  difícil de mantener y con riesgo de arrastrar falsos positivos.
+
+*Decisión:* se adopta la opción C.
+
+- `_field_matches()` compara los tokens de la consulta con los de cada campo de `KNOWN_FIELDS`
+  (excluyendo `vacuna`, `otras` y `posibles`) y aplica `+0.04` por campo, con máximo `+0.08`.
+- `_has_field()` exige que la etiqueta sea la clave del chunk (`— CAMPO: valor`), no parte del
+  encabezado de sección; así "6.2.2. ESQUEMA DE VACUNACIÓN…" no se confunde con el campo.
+- Si la consulta nombra una vacuna y un campo, se añaden como candidatos los chunks de esa vacuna
+  que contienen el campo, ordenados por BM25, y se incorporan a la fusión como tercer ranking
+  (`1/(60+rank)`). Esto rescata el rank 130 de esquema.
+- Los chunks de otra vacuna reciben `-0.02` cuando la consulta nombra una vacuna, para que no
+  compitan por el mismo campo. Se mantiene el refuerzo de vacuna y el de `DOSIS`.
+
+*Evidencia:* conservación pasa de rank 2 (RRF 0,0664 frente a 0,0720) a **rank 1** (0,1064 frente a
+0,0720); esquema pasa de no ser candidato a **rank 1** (0,1164), con el campo de uso simultáneo en
+rank 2 (0,0720). Las variantes con "frasco", "menores" y "menores años" quedan también en rank 1.
+La evaluación `eval/preguntas.jsonl` sigue en **20/20** y no se reconstruyó el índice.
+
+*Consecuencias:*
+
+- Ventajas: recuperación estable para preguntas por campo de ficha ("conservación", "dosis",
+  "composición", "vía", "contraindicación", "efectos", "esquema"), sin reindexar ni coste de LLM.
+- Costes: una consulta que mencione un campo compartido por muchas fichas puede subir varios
+  chunks del mismo campo; el filtro por vacuna y BM25 desempatan. El top 2-3 puede incluir tablas
+  generales del mismo campo.
+- Deuda: el embedding sigue sin recuperar el chunk de conservación y BM25 sigue penalizando valores
+  largos; si se cambia el modelo o se reindexa, conviene revisar si la expansión sigue siendo
+  necesaria. No se descarta la opción B como mejora futura.
+
+*Revisar si:*
+
+- El Hit@5 baja de 20/20 o una pregunta pasa a recuperar un campo distinto de la misma ficha por
+  el boost.
+- Una nueva versión de embeddings recupera el chunk correcto en el top 5 sin ayuda del boost; en
+  ese caso se puede reducir o eliminar.
+- Se añaden campos a `KNOWN_FIELDS` sin actualizar las pruebas de `_field_matches`/`_has_field`.
+
+*** ADR-009 — Notación científica y numerales romanos tras el OCR
+
+*Contexto:* la ficha de la BCG salía como `1 X 105 ... 33 X 10⁵ U.F.C.` y `cepa Moscow 361-1`.
+Los valores correctos son `1 × 10⁵`, `33 × 10⁵` y `Moscow 361-I`. El OCR de una página escaneada
+no conserva la posición vertical del superíndice ni distingue de forma fiable el numeral romano
+`I` del dígito `1` o de la letra `l`. El mismo problema puede afectar a dosis, títulos virales y
+cepas.
+
+*Opciones consideradas:*
+
+- *A. Cambiar el modo de OCR a `layout_regions`:* en la p. 13 recupera `1 X 10⁵` y `2 x 10⁵`, pero
+  en la p. 17 degrada la cadena de frío (`+ 2C a a +8C` en vez de `+ 2℃ a +8℃`). No se adopta
+  globalmente.
+- *B. Subir `images_scale`/`ocr_scale` a 5.0:* no recupera `10⁵` y produce duplicados como
+  `2 × 10⁵5`. Más tiempo sin mejora.
+- *C. OCR por celda o un modelo VLM:* podría conservar mejor el superíndice, pero añade
+  complejidad, tiempo y no es determinista; contrario a ADR-004.
+- *D. Normalización determinista posterior:* reconocer el patrón `coeficiente × 10^exponente`
+  cuando el OCR perdió el exponente y corregir el numeral romano de cepas conocidas. Barato,
+  auditable y sin reextraer el PDF.
+
+*Decisión:* se adopta la opción D.
+
+- `normalize_scientific_notation()` corrige `1 X 105`, `2 × 105`, `8 x 105 UFC`, `10^5` y `10 5` a
+  `1 × 10⁵`, `2 × 10⁵`, `8 × 10⁵ UFC`, `10⁵`. Solo actúa si hay una multiplicación explícita por
+  `10` y un exponente plausible (5-9); no toca `1 × 100`, `105` suelto ni `105.5`.
+- `canonicalize_terms()` normaliza `Moscow 361-1` y `Moscow 361-l` a `Moscow 361-I`.
+- Se mantiene `OcrMode.FULL_PAGE` y `images_scale=3.0` porque el modo alternativo empeora las
+  temperaturas.
+- No se añade una bandera de revisión: la transformación es determinista y el patrón es explícito.
+
+*Evidencia:* comparación en la p. 13 con la misma página y TableFormer ACCURATE:
+
+| Configuración | COMPOSICIÓN BCG | Tiempo/pág. |
+|---|---|---|
+| `full_page`, escala 3.0 | `1 X 105 ... 33 X 10⁵ ... 2 × 105 y 8 x 105 UFC` | 21,4 s |
+| `layout_regions`, escala 3.0 | `1 X 10⁵ ... 33 X 10⁵ ... 2 x 10⁵ y 8 x 105 UFC` | 20,0 s |
+| `full_page`, escala 5.0 | `1 X 105 ... 33 X 10⁵ ... 2 × 10⁵5 y 8 x 105 UFC` | 19,0 s |
+
+Tras la normalización, el chunk final queda:
+`1 × 10⁵ del bacilo de Calmette-Guérin y 33 × 10⁵ U.F.C. ... 2 × 10⁵ y 8 × 10⁵ UFC`, y la
+descripción usa `Moscow 361-I`. El gold set sigue en **291/296** claves y el Hit@5 en **20/20**;
+no fue necesario repetir la extracción, solo regenerar chunks e índice.
+
+*Consecuencias:*
+
+- Ventajas: corrige un error numérico clínico frecuente (10⁵ frente a 105), sin cambiar el motor de
+  OCR ni el tiempo de ingesta, y deja el patrón documentado y probado.
+- Costes: la regla es conservadora y solo cubre exponentes 5-9 tras `×10`; un `105` sin contexto
+  sigue siendo ambiguo. La corrección de cepas se limita a `Moscow 361-I`; otros numerales romanos
+  requerirían añadir su patrón al léxico.
+- Deuda: revisar la ficha de BCG y otras composiciones con títulos virales cuando cambie el OCR o
+  se añadan vacunas. Los subíndices químicos (por ejemplo, fórmulas) no se normalizan.
+- Documentación: README y este ADR describen el alcance real de la corrección.
+
+*Revisar si:*
+
+- Aparece una notación `10^n` con exponente fuera de 5-9 o un `105` sin `×10` que deba corregirse.
+- El OCR empieza a devolver superíndices Unicode de forma consistente; entonces se puede reducir
+  la regla.
+- Se añaden cepas con numerales romanos (`I`, `II`, `III`) y el OCR las confunde con dígitos.
+- Una nueva versión de Docling/RapidOCR cambia la representación de `10⁵` o de los guiones de cepa.
 
 ** 18.4 Cómo aplicar este método a una decisión futura
 

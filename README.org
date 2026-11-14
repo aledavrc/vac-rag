@@ -27,9 +27,9 @@ base vectorial que puede servirse en local o en un contenedor ligero.
 INGESTA (local, una vez)
 
   PDF escaneados
-      → OCRmyPDF + Tesseract español
-      → Docling: texto, secciones y tablas
-      → limpieza y chunks con metadatos
+      → Docling: layout + OCR (RapidOCR/ONNX) + tablas
+      → fusión inter-página y limpieza con léxico del dominio
+      → chunks con metadatos
       → embeddings + ChromaDB
       → data/index/chroma/
 
@@ -66,34 +66,94 @@ modelo de lenguaje responderá mal.
 - FastEmbed + ONNX Runtime con =paraphrase-multilingual-MiniLM-L12-v2= (384 dimensiones).
   No requiere PyTorch en la imagen de consulta.
 - BM25 en memoria para búsqueda léxica.
-- OCRmyPDF + Tesseract (español) para la ingesta local.
-  Usa =tessdata_best=, renderizado a 300 ppp, motor LSTM, vocabulario del dominio y patrones
-  numéricos.
-- Docling para extracción de layout y tablas.
+- Docling para layout, tablas (TableFormer ACCURATE) y OCR nativo.
+  El OCR corre dentro de Docling con =RapidOCR= (ONNX Runtime, español) y renderizado a 3×
+  (~216-300 ppp), de modo que las celdas se reconocen después de segmentar el layout. También se
+  puede usar =Tesseract CLI= con =models/tessdata= (=VACUINFO_OCR_ENGINE=tesseract_cli=).
+- Fusión inter-página de tablas, notas al pie y párrafos cortados, con numeración impresa continua
+  entre las dos partes del PDF.
+- Léxico determinista del dominio para grados centígrados, volúmenes, ordinales de dosis y siglas.
 - Normalización contextual de unidades (=ml=, =mcg=, =°C=) y banderas de revisión para valores
   dudosos.
 - LLM opcional con interfaz compatible con OpenAI (Ollama, OpenAI, etc.).
   Si no se configura, la API responde en *modo extractivo* con citas.
 
+* Requisitos
+
+- Python 3.12 (el paquete declara =>=3.11=, pero el =Makefile= fija 3.12).
+- [[https://docs.astral.sh/uv/][uv]] para crear el entorno e instalar dependencias.
+- =make=, opcional: todos los comandos tienen equivalente sin =make=.
+- Docker + Docker Compose, solo si se usa la imagen de consulta.
+- ~1,5 GB libres para las dependencias de ingesta (Docling + RapidOCR).
+- Para ingestar no hacen falta binarios externos: el OCR por defecto es RapidOCR (ONNX).
+
+Funciona en Linux, macOS y Windows. En Windows se recomienda PowerShell para los comandos Python;
+=makes= y los scripts =.sh= requieren Git Bash/WSL, o bien se usan los comandos equivalentes de la
+sección [[#comandos-utiles][Comandos útiles]].
+
+* Qué se versiona y qué se genera
+
+| Elemento | ¿En git? | Tamaño | Nota |
+|---|---|---|---|
+| =pdf/= | sí | ~23 MB | corpus de origen; imprescindible para ingestar |
+| =data/overrides/= | sí | <10 KB | correcciones manuales de páginas concretas |
+| =eval/= | sí | ~70 KB | gold set de evaluación |
+| =data/chunks.jsonl= | no | ~0,5 MB | se genera con =make ingest= |
+| =data/index/chroma/= | no | ~6 MB | se genera; necesario para consultar |
+| =data/ocr/=, =data/derived/= | no | ~76 MB | intermedios del OCR |
+| =models/fastembed/= | no | ~240 MB | se descarga en la primera ingesta |
+| =models/tessdata/= | no | ~24 MB | opcional (=make setup-ocr=) |
+| =.env= | no | — | copiar desde =.env.example= |
+
+El repositorio pesa ~24 MB porque solo se versiona el código, el corpus y la evaluación. Los
+artefactos pesados (modelos, OCR intermedio e índice) se regeneran localmente con =make ingest=.
+En una máquina donde solo se quiere *consultar* se puede copiar =data/index/= y
+=models/fastembed/= desde la máquina que ya ingirió, sin necesidad de Docling.
+
 * Instalación local
 
 #+begin_src bash
-# 1. Dependencias de Python
+# 0. Configuración (opcional: sin .env la API responde en modo extractivo)
+cp .env.example .env          # PowerShell: Copy-Item .env.example .env
+
+# 1. Dependencias de Python (incluye Docling + RapidOCR)
 uv venv --python 3.12 .venv
 uv pip install -e ".[ingest,dev]"
 
-# 2. Modelo de OCR en español (no requiere sudo)
-make setup-ocr
+# 2. Comprobar qué falta para consultar o ingestar
+make doctor
 
-# 3. Ingesta completa: OCR, Docling, chunks e índice
+# 3. Ingesta completa: Docling (OCR + layout + tablas), chunks e índice
 make ingest
 
 # 4. API
 make serve
 #+end_src
 
-=make setup-ocr= descarga =spa.traineddata= y copia los archivos de configuración de Tesseract a
-=models/tessdata= para que OCRmyPDF los use sin tocar el sistema.
+Si no hay =make= (Windows sin Git Bash/WSL), los mismos pasos son:
+
+#+begin_src powershell
+uv venv --python 3.12 .venv
+uv pip install -e ".[ingest,dev]"
+.venv\Scripts\python.exe -m vacuinfo.cli doctor
+.venv\Scripts\python.exe -m vacuinfo.cli ingestar
+.venv\Scripts\python.exe -m vacuinfo.cli servir --reload
+#+end_src
+
+El OCR por defecto es RapidOCR con ONNX Runtime y no requiere binarios externos. Solo si se
+configura =VACUINFO_OCR_ENGINE=tesseract_cli= hay que descargar =spa.traineddata= con
+=make setup-ocr=; en ese caso Docling usa =models/tessdata=.
+
+Variables principales de la ingesta (ver =.env.example=):
+
+| Variable | Valor por defecto | Efecto |
+|---|---|---|
+| =VACUINFO_OCR_ENGINE= | =rapidocr= | Motor de OCR: =rapidocr= o =tesseract_cli= |
+| =VACUINFO_OCR_LANG= | =["es"]= | Idiomas en formato JSON |
+| =VACUINFO_OCR_MODE= | =full_page= | =full_page=, =layout_regions= o =pdf_aware_layout_regions= |
+| =VACUINFO_OCR_SCALE= | =3.0= | Resolución del recorte OCR (~216 ppp) |
+| =VACUINFO_IMAGES_SCALE= | =3.0= | Resolución de la página para layout y tablas |
+| =VACUINFO_OCR_MODEL_SIZE= | =medium= | Tamaño del modelo RapidOCR |
 
 El modelo de embeddings se descarga la primera vez que se ejecuta la ingesta.
 
@@ -110,6 +170,10 @@ docker compose up --build -d
 =docker-compose.yml= monta =./data/index= en =/app/data/index=. El contenedor no necesita los PDF,
 ni =chunks.jsonl=, ni los modelos de OCR: reconstruye el índice léxico desde ChromaDB.
 El build descarga el modelo de embeddings (~220 MB) y lo deja dentro de la imagen.
+
+Si =data/index/chroma= está vacío, el contenedor arranca igual pero =/salud= responde
+=estado: degradado= y las consultas devuelven 503. En una máquina nueva hay que ejecutar
+=make ingest= antes (o copiar =data/index/= desde la máquina donde ya se ingirió).
 
 Para usar un LLM local en el host (Ollama):
 
@@ -167,23 +231,27 @@ negritas y saltos de línea; el cliente debe renderizarlos.
 #+begin_example
 vacuinfo/
 ├── pdf/                  # PDF originales
-├── data/                 # OCR, texto limpio, chunks e índice (generado)
-│   ├── processed/        # texto y reportes de revisión
+├── data/                 # derivados, texto limpio, chunks e índice (generado)
+│   ├── derived/          # PDFs con páginas giradas, sin capa de texto
+│   ├── processed/        # texto, reportes de revisión y fusiones
 │   ├── overrides/        # correcciones de página completa
 │   └── index/            # ChromaDB
-├── models/               # tessdata y modelo FastEmbed (generado)
+├── models/               # modelo FastEmbed y tessdata opcional (generado)
 ├── src/vacuinfo/
-│   ├── data/             # vocabulario y patrones de Tesseract
-│   ├── ingest/           # OCR, Docling, limpieza, chunks, índice
+│   ├── data/             # vocabulario y patrones de Tesseract (fallback)
+│   ├── ingest/           # Docling/OCR, fusión, limpieza, chunks, índice
 │   ├── rag/              # embeddings, recuperación, generación
 │   ├── api.py            # FastAPI
 │   └── cli.py            # comandos
 ├── eval/                 # preguntas de evaluación
+├── scripts/              # atajos de ingesta y OCR
 ├── tests/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── Makefile
 ├── pyproject.toml
+├── .env.example
+├── .gitattributes
 ├── PLAN.org
 └── README.org
 #+end_example
@@ -191,29 +259,38 @@ vacuinfo/
 * Comandos útiles
 
 #+begin_src bash
+make install       # entorno .venv + dependencias (ingesta y dev)
+make doctor        # comprueba índice, modelo, PDF y dependencias
 make ingest        # pipeline completa
 make serve         # API con recarga
 make test          # pruebas
 make lint          # ruff
+make clean-data    # borra derivados, chunks e índice (conserva PDF y overrides)
 make docker-build
 make docker-up
 #+end_src
 
-Comandos equivalentes sin =make=:
+Comandos equivalentes sin =make= (Linux/macOS; en Windows usa =.venv\Scripts\python.exe=):
 
 #+begin_src bash
-.venv/bin/python -m vacuinfo.cli ingestar
-.venv/bin/python -m vacuinfo.cli consultar "¿Qué vacunas se aplican a gestantes?"
-.venv/bin/python -m vacuinfo.cli consultar --render "¿Qué consecuencias tiene una inyección no estéril?"
-.venv/bin/python -m vacuinfo.cli buscar "cadena de frío"
-.venv/bin/python -m vacuinfo.cli servir --reload
+python -m vacuinfo.cli doctor
+python -m vacuinfo.cli ingestar
+python -m vacuinfo.cli consultar "¿Qué vacunas se aplican a gestantes?"
+python -m vacuinfo.cli consultar --render "¿Qué consecuencias tiene una inyección no estéril?"
+python -m vacuinfo.cli buscar "cadena de frío"
+python -m vacuinfo.cli evaluar --archivo eval/preguntas.jsonl -k 5
+python -m vacuinfo.cli servir --reload
 #+end_src
+
+Con el entorno activado (=source .venv/bin/activate= o =.venv\Scripts\activate=) también funciona el
+ejecutable =vacuinfo= instalado por =pyproject.toml=.
 
 * Estado
 
 - Pipeline de ingesta ejecutada sobre las 140 páginas.
-- 807 chunks indexados en ChromaDB; 15 marcados para revisión.
-- Fichas key-value: 277/296 claves canónicas (93,6 %) y 0 continuaciones huérfanas (ADR-006).
+- 821 chunks indexados en ChromaDB; 6 marcados para revisión.
+- Fichas key-value: 291/296 claves canónicas (98,3 %), 0 continuaciones huérfanas y 0 claves no
+  canónicas (ADR-006/ADR-007).
 - 20/20 preguntas de evaluación recuperan la fuente esperada en el top 5; el conjunto incluye
   5 preguntas fuera de alcance ([[file:eval/preguntas.md][eval/preguntas.md]]).
 - API probada en local y en Docker, con la base montada como único volumen.
@@ -223,21 +300,31 @@ Comandos equivalentes sin =make=:
 
 * Calidad del OCR
 
-- Se usa =tessdata_best=, 300 ppp, LSTM y PSM 3.
-- Un vocabulario del dominio sesga el reconocimiento hacia =ml=, =mcg=, =mg=, =°C= y nombres de
-  vacunas.
-- Los patrones numéricos favorecen la presencia del punto o la coma decimal.
-- Después del OCR se normalizan unidades en contexto: =0.5 mi= → =0.5 ml=, =9,5 mí= → =9,5 ml=,
-  =+2'Ca+8%C= → =+2 °C a+8 °C=.
-- Los valores ambiguos no se corrigen a ciegas: se marcan con =revisar=true= y una nota. Por
-  ejemplo, =05 ml= se marca como “posible decimal perdido”.
+- El OCR se ejecuta dentro de Docling después de detectar el layout: TableFormer segmenta la tabla
+  y RapidOCR reconoce región por región, con renderizado a 3×.
+- El motor alternativo =tesseract_cli= usa =tessdata_best=, PSM 3 y =models/tessdata=.
+- Los grados centígrados rotos se normalizan en contexto: =+20C a +80C=, =+2 oC a +8 oC=,
+  =2°C a 8°C= y =+2'Ca+8%C= → =+2 °C a +8 °C=. Un =+20C= aislado solo se corrige si la línea
+  habla de conservación o cadena de frío; si no, se marca para revisión.
+- Los volúmenes se corrigen con separador decimal: =O,5 ml=, =0,5ml= y =0.5 m1= → =0.5 ml=;
+  =O,1 ml= → =0.1 ml=.
+- Los ordinales de dosis se canonizan: =lra=, =1.a=, =1ª= → =1ra=; =3era= → =3ra=; =1er= y
+  =2do= se conservan para refuerzos.
+- La notación científica perdida por el OCR se restituye cuando hay una multiplicación explícita:
+  =1 X 105=, =2 × 105= y =8 x 105 UFC= → =1 × 10⁵=, =2 × 10⁵= y =8 × 10⁵ UFC=. También se
+  corrige el numeral romano de la cepa BCG =Moscow 361-1= → =Moscow 361-I=.
+- Un léxico determinista corrige siglas del dominio (=HVB= → =HvB=, =VHP= → =VPH=, =DTP= → =DPT=)
+  sin tocar nombres ni datos clínicos.
+- Las dosis sin separador decimal no se adivinan: =05 ml= se marca como “posible decimal perdido”.
 - =GET /salud= informa =chunks_revisar=; cada fuente de una consulta incluye =revisar= y =notas=.
 - Los valores marcados se listan en =data/processed/revision.md= para revisión manual.
 
 * Correcciones específicas del corpus
 
-- Las páginas 101-103 y 121-130 están escaneadas giradas 90°; el OCR las endereza antes de
-  procesarlas.
+- Las páginas impresas 101-103 y 121-130 están escaneadas giradas 90°; se giran sin inyectar texto
+  antes de que Docling haga el OCR.
+- Las tablas, notas al pie y párrafos cortados entre páginas (incluido el salto entre los dos PDF)
+  se fusionan antes del chunking; el detalle queda en =data/processed/fusiones.md=.
 - Las páginas de formularios en blanco (101-103, 121-139) se omiten del índice para evitar ruido.
 - Si una tabla crítica queda mal reconstruida, se puede escribir un Markdown corregido en
   =data/overrides/nts-246-parte-1-p23.md= (o con el nombre completo del PDF) y volver a ejecutar

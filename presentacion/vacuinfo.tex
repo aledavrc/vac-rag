@@ -148,8 +148,8 @@
   \centering
   \begin{tikzpicture}[>=Stealth]
     \node[arch] (pdf) at (0,0)      {\texttt{pdf/*.pdf}\\2 partes};
-    \node[caja] (ocr) at (2.60,0)   {\textbf{1} OCR\\OCRmyPDF\\+ Tesseract};
-    \node[caja] (doc) at (5.20,0)   {\textbf{2} Docling\\secciones\\y tablas};
+    \node[caja] (ocr) at (2.60,0)   {\textbf{1} Docling\\layout + OCR\\+ tablas};
+    \node[caja] (doc) at (5.20,0)   {\textbf{2} Fusión\\inter-página\\+ léxico};
     \node[caja] (lim) at (7.80,0)   {\textbf{3} Limpieza\\normalización\\de unidades};
     \node[caja] (chk) at (10.40,0)  {\textbf{4} Chunks\\con metadatos};
     \node[caja] (ix)  at (13.00,0)  {\textbf{5} Índice\\Embeddings +\\ChromaDB};
@@ -222,8 +222,8 @@
     \end{column}
     \begin{column}{0.48\textwidth}
       \begin{itemize}
-        \item OCRmyPDF + Tesseract (español)
-        \item Docling (layout y tablas)
+        \item Docling + RapidOCR (ONNX) en una pasada
+        \item TableFormer ACCURATE para tablas
         \item Docker Compose (imagen de consulta ligera, $\approx$850 MB)
         \item LLM opcional vía API compatible con OpenAI
       \end{itemize}
